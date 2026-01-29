@@ -1,0 +1,17 @@
+# Trading Bot v5.1 依賴套件
+# pip install -r requirements.txt
+
+# 核心交易
+ccxt>=4.0.0
+pandas>=2.0.0
+pandas-ta>=0.3.14b
+
+# GUI (現代化介面)
+customtkinter>=5.2.0
+pillow>=10.0.0
+
+# 通知
+requests>=2.28.0
+
+# 其他
+python-dateutil>=2.8.0
