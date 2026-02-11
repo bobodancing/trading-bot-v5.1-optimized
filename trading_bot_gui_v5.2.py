@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-交易機器人 v5.2 - 現代化 GUI 控制面板 (中文版)
-整合 Market Scanner + A+ SOP 多階段出場
+交易機器人 v5.3 - 現代化 GUI 控制面板 (中文版)
+整合 Market Scanner + 統一出場 SOP
 
 美化版：
 - 精緻化配色方案 (Refined FinTech Dark Theme)
@@ -16,6 +16,7 @@ from tkinter import messagebox
 import json
 import subprocess
 import threading
+import queue
 import os
 import sys
 import platform
@@ -113,7 +114,7 @@ F = {
 
 
 class ModernTradingBotGUI(ctk.CTk):
-    """交易機器人 v5.2 專業版 GUI — 美化 & 優化版"""
+    """交易機器人 v5.3 專業版 GUI — 美化 & 優化版"""
 
     # ==================== 配置映射表 ====================
     # (json_key, attr_name, default_value)
@@ -146,7 +147,7 @@ class ModernTradingBotGUI(ctk.CTk):
         ("atr_multiplier",    "atr_mult_var",      1.5),
         # 市場過濾
         ("enable_market_filter",      "enable_market_filter_var", True),
-        ("adx_threshold",             "adx_threshold_var",        15),
+        ("adx_threshold",             "adx_threshold_var",        20),
         ("atr_spike_multiplier",      "atr_spike_var",            2.0),
         ("ema_entanglement_threshold","ema_entangle_var",         0.02),
         # 量能
@@ -162,19 +163,20 @@ class ModernTradingBotGUI(ctk.CTk):
         ("enable_tiered_entry",        "enable_tiered_var",    True),
         ("enable_ema_pullback",        "enable_pullback_var",  True),
         ("enable_volume_breakout",     "enable_breakout_var",  True),
-        ("enable_structure_break_exit","enable_structure_var",  False),
+        ("enable_structure_break_exit","enable_structure_var",  True),
         ("tier_a_position_mult", "tier_a_var", 1.0),
         ("tier_b_position_mult", "tier_b_var", 0.7),
         ("tier_c_position_mult", "tier_c_var", 0.5),
+        # v5.3 出場設定
+        ("max_hold_hours",      "max_hold_hours_var",    24),
+        ("first_partial_pct",   "first_partial_pct_var", 30),
+        ("second_partial_pct",  "second_partial_pct_var",30),
         # Scanner
         ("use_scanner_symbols", "use_scanner_var", False),
     ]
 
     # 非 GUI 變數的配置 (直接存為 instance attribute)
     _CONFIG_ATTRS: List[Tuple[str, str, Any]] = [
-        ("enable_aplus_exit",        "_aplus_exit_enabled", True),
-        ("aplus_2r_partial_percent", "_aplus_2r_pct",      30),
-        ("aplus_3r_partial_percent", "_aplus_3r_pct",      30),
         ("aplus_trailing_atr_mult",  "_aplus_trailing_mult",1.5),
         ("scanner_json_path",        "_scanner_json_path",  "hot_symbols.json"),
         ("scanner_max_age_minutes",  "_scanner_max_age",    30),
@@ -184,7 +186,7 @@ class ModernTradingBotGUI(ctk.CTk):
         super().__init__()
 
         # 視窗設定
-        self.title("波茶波茶 v5.2 專業版")
+        self.title("波茶波茶 v5.3 專業版")
         self.geometry("1520x980")
         self.minsize(960, 640)
         self.resizable(True, True)
@@ -198,6 +200,10 @@ class ModernTradingBotGUI(ctk.CTk):
         self.is_running = False
         self.is_connected = False
         self.is_trading = False
+
+        # 日誌批次緩衝（使用 thread-safe queue）
+        self._log_queue = queue.Queue()
+        self._log_flush_scheduled = False
 
         # Scanner 狀態
         self.scanner = None
@@ -348,7 +354,7 @@ class ModernTradingBotGUI(ctk.CTk):
                      text_color=C['text_main']).pack(side="left", anchor="s")
 
         # 版本標籤（pill badge）
-        badge = ctk.CTkLabel(logo, text="  v5.2  ", height=22, corner_radius=11,
+        badge = ctk.CTkLabel(logo, text="  v5.3  ", height=22, corner_radius=11,
                              font=ctk.CTkFont(family=_CJK, size=10, weight="bold"),
                              text_color=C['bg_root'], fg_color=C['primary'])
         badge.pack(side="left", padx=(10, 0), pady=(6, 0))
@@ -477,7 +483,8 @@ class ModernTradingBotGUI(ctk.CTk):
             ("風險管理",  self._tab_risk),
             ("市場過濾",  self._tab_filter),
             ("量能分級",  self._tab_volume),
-            ("v5.1 進階", self._tab_v51),
+            ("出場設定",  self._tab_exit),
+            ("進階功能",  self._tab_v51),
             ("市場掃描",  self._tab_scanner),
         ]
         for name, builder in tab_builders:
@@ -546,7 +553,9 @@ class ModernTradingBotGUI(ctk.CTk):
         self._section(s, "時間設定")
         card3 = self._card(s)
         self.check_interval_var = ctk.IntVar(value=60)
+        self.max_hold_hours_var = ctk.IntVar(value=24)
         self._row(card3, "檢查間隔（秒）", self.check_interval_var, "slider", from_=10, to=300)
+        self._row(card3, "最大持倉時間(H)", self.max_hold_hours_var, "slider", from_=6, to=72)
 
     # ── 風險管理 ──
     def _tab_risk(self, parent):
@@ -580,7 +589,7 @@ class ModernTradingBotGUI(ctk.CTk):
         self._section(s, "市場過濾條件")
         card = self._card(s)
         self.enable_market_filter_var = ctk.BooleanVar(value=True)
-        self.adx_threshold_var = ctk.IntVar(value=15)
+        self.adx_threshold_var = ctk.IntVar(value=20)
         self.atr_spike_var = ctk.DoubleVar(value=2.0)
         self.ema_entangle_var = ctk.DoubleVar(value=0.02)
         self._row(card, "啟用市場過濾", self.enable_market_filter_var, "switch")
@@ -606,18 +615,43 @@ class ModernTradingBotGUI(ctk.CTk):
         self._row(card, "最低量閾值", self.vol_minimum_var, "slider", from_=0.3, to=1.5)
         self._row(card, "接受弱勢信號", self.accept_weak_var, "switch")
 
-    # ── v5.1 進階 ──
+    # ── 出場設定（v5.3 統一 SOP） ──
+    def _tab_exit(self, parent):
+        s = self._scrollable(parent)
+
+        self._section(s, "統一出場 SOP")
+        card = self._card(s)
+        self.first_partial_pct_var = ctk.IntVar(value=30)
+        self.second_partial_pct_var = ctk.IntVar(value=30)
+        self._row(card, "1.5R 減倉比例(%)", self.first_partial_pct_var, "slider", from_=10, to=60)
+        self._row(card, "2.5R 減倉比例(%)", self.second_partial_pct_var, "slider", from_=10, to=60)
+
+        self._section(s, "出場流程說明")
+        info_card = self._card(s)
+        info_frame = ctk.CTkFrame(info_card, fg_color="transparent")
+        info_frame.pack(fill="x", padx=16, pady=10)
+        sop_text = (
+            "1.0R  →  移損至 +0.3R（不減倉）\n"
+            "1.5R  →  第一次減倉，移損至 +0.5R\n"
+            "2.5R  →  第二次減倉，移損至 +1.5R，啟動 ATR 追蹤止損\n"
+            "尾倉  →  由 ATR 追蹤止損管理\n"
+            "超時  →  未達 1.5R 且超過最大持倉時間，全部平倉"
+        )
+        ctk.CTkLabel(info_frame, text=sop_text, font=F['small'],
+                     text_color=C['text_sub'], justify="left").pack(anchor="w")
+
+    # ── 進階功能 ──
     def _tab_v51(self, parent):
         s = self._scrollable(parent)
 
-        self._section(s, "v5.1 進階功能")
+        self._section(s, "進階功能開關")
         card = self._card(s)
         self.enable_mtf_var = ctk.BooleanVar(value=True)
         self.enable_dynamic_var = ctk.BooleanVar(value=True)
         self.enable_tiered_var = ctk.BooleanVar(value=True)
         self.enable_pullback_var = ctk.BooleanVar(value=True)
         self.enable_breakout_var = ctk.BooleanVar(value=True)
-        self.enable_structure_var = ctk.BooleanVar(value=False)
+        self.enable_structure_var = ctk.BooleanVar(value=True)
         self._row(card, "多時間框架確認", self.enable_mtf_var, "switch")
         self._row(card, "動態閾值調整", self.enable_dynamic_var, "switch")
         self._row(card, "分級入場", self.enable_tiered_var, "switch")
@@ -707,6 +741,35 @@ class ModernTradingBotGUI(ctk.CTk):
         self.log_text.configure(state="disabled")
         self.log_message("日誌已清除。")
 
+    def _flush_log_buffer(self):
+        """批次插入緩衝的 bot 日誌行，減少 Tkinter 操作次數"""
+        self._log_flush_scheduled = False
+
+        lines = []
+        while not self._log_queue.empty():
+            try:
+                lines.append(self._log_queue.get_nowait())
+            except queue.Empty:
+                break
+
+        if not lines:
+            return
+
+        self.log_text.configure(state="normal")
+        for line in lines:
+            ts = datetime.now().strftime("%H:%M:%S")
+            self.log_text.insert("end", f"[{ts}]", "time")
+            self.log_text.insert("end", f" [資訊] ", "資訊")
+            self.log_text.insert("end", f"{line}\n", "資訊")
+
+        # 批次插入後統一裁剪
+        line_count = int(self.log_text.index("end-1c").split(".")[0])
+        if line_count > self.LOG_MAX_LINES:
+            self.log_text.delete("1.0", f"{line_count - self.LOG_MAX_LINES + 1}.0")
+
+        self.log_text.see("end")
+        self.log_text.configure(state="disabled")
+
     # ==================== 配置 Load / Save（統一映射版） ====================
 
     def load_config(self):
@@ -783,18 +846,18 @@ class ModernTradingBotGUI(ctk.CTk):
             "risk_per_trade": 0.02, "max_total_risk": 0.06, "max_positions_per_group": 3,
             "max_position_percent": 0.30,
             "lookback_period": 20, "volume_ma_period": 20, "atr_period": 14, "atr_multiplier": 1.5,
-            "enable_market_filter": True, "adx_threshold": 15, "atr_spike_multiplier": 2.0,
+            "enable_market_filter": True, "adx_threshold": 20, "atr_spike_multiplier": 2.0,
             "ema_entanglement_threshold": 0.02,
             "enable_volume_grading": True, "vol_explosive_threshold": 2.5, "vol_strong_threshold": 1.5,
             "vol_moderate_threshold": 1.0, "vol_minimum_threshold": 0.7, "accept_weak_signals": True,
             "enable_mtf_confirmation": True, "enable_dynamic_thresholds": True,
             "enable_tiered_entry": True, "enable_ema_pullback": True, "enable_volume_breakout": True,
             "tier_a_position_mult": 1.0, "tier_b_position_mult": 0.7, "tier_c_position_mult": 0.5,
-            "enable_structure_break_exit": False, "check_interval": 60,
+            "enable_structure_break_exit": True, "check_interval": 60,
             "use_scanner_symbols": False, "scanner_json_path": "hot_symbols.json",
             "scanner_max_age_minutes": 30,
-            "enable_aplus_exit": True, "aplus_2r_partial_percent": 30,
-            "aplus_3r_partial_percent": 30, "aplus_trailing_atr_mult": 1.5,
+            "first_partial_pct": 30, "second_partial_pct": 30,
+            "aplus_trailing_atr_mult": 1.5, "max_hold_hours": 24,
         }
 
     # ==================== Bot 控制邏輯 ====================
@@ -836,7 +899,10 @@ class ModernTradingBotGUI(ctk.CTk):
                         except json.JSONDecodeError:
                             pass
                     else:
-                        self.after(0, lambda l=line: self.log_message(l))
+                        self._log_queue.put(line)
+                        if not self._log_flush_scheduled:
+                            self._log_flush_scheduled = True
+                            self.after(200, self._flush_log_buffer)
                 self.bot_process.wait()
             except Exception as e:
                 self.after(0, lambda: self.log_message(f"機器人錯誤: {e}", "錯誤"))
