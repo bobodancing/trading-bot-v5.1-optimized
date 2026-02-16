@@ -5,8 +5,8 @@
         "SOL/USDT",
         "DOGE/USDT"
     ],
-    "api_key": "QQrNC88XhQFdRf6Aal1kCj74A3vw3qKqA1oJnTUqDemMjinvHRoyQzarNIfQwEPS",
-    "api_secret": "uenJ18wT5UMi5apPRT3r8dPguu80ONVKeAcc0s17ntCA4u3NnXBWS2otCXnAQL2Q\n",
+    "api_key": "",
+    "api_secret": "",
     "exchange": "binance",
     "sandbox_mode": true,
     "telegram_enabled": true,
