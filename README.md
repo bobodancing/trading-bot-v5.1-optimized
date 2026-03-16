@@ -1,421 +1,629 @@
-# Trading Bot v5.3 — 智能演算法交易系統
+# Trading Bot V6.0 — 滾倉版
 
-基於 2B 突破形態的加密貨幣自動交易系統，整合 Market Scanner 動態選股、多策略信號偵測、分級入場與統一出場 SOP。
+三段式金字塔加倉系統，透過 Swing Point 結構分析和動態風險壓縮，實現加密貨幣期貨趨勢交易。
+
+> 最後更新：2026-02-27
+
+## 目錄
+
+- [概覽](#概覽)
+- [專案結構](#專案結構)
+- [快速開始](#快速開始)
+- [架構設計](#架構設計)
+- [交易策略](#交易策略)
+- [Market Scanner](#market-scanner)
+- [風險管理](#風險管理)
+- [配置系統](#配置系統)
+- [持久化與 Crash Recovery](#持久化與-crash-recovery)
+- [測試](#測試)
+- [技術棧](#技術棧)
+- [日誌系統](#日誌系統)
 
 ---
 
-## 架構總覽
+## 概覽
 
-```
-trading-bot-v5.2/
-├── trading_bot_gui_v5.2.py      # GUI 控制面板 (CustomTkinter)
-├── trading_bot_v5.2_optimized.py # 交易核心引擎
-├── scanner/
-│   ├── market_scanner.py         # 4 層市場掃描器
-│   ├── scanner_config.json       # Scanner 配置
-│   └── README.md                 # Scanner 文件
-├── bot_config.json               # 交易機器人配置 (GUI 自動管理)
-└── requirements.txt              # Python 依賴
-```
+V6.0 是基於 V5.3 引擎的重大升級。核心改變：
 
-### 核心類別
-
-| 類別 | 位置 | 職責 |
+| 比較 | V5.3 | V6.0 |
 |------|------|------|
-| `Config` | 引擎 | 統一配置管理，JSON ↔ 屬性自動映射 (`_KEY_MAP`) |
-| `RiskManager` | 引擎 | 倉位計算、總風險檢查、餘額查詢 |
-| `TechnicalAnalysis` | 引擎 | 2B 偵測、EMA 回撤、量能突破、結構破壞 |
-| `SignalTierSystem` | 引擎 | A/B/C 信號分級評分 |
-| `MarketFilter` | 引擎 | ADX / ATR / EMA 糾纏度三重過濾 |
-| `DynamicThresholdManager` | 引擎 | 根據市場波動動態調整 ADX、ATR 閾值 |
-| `TradeManager` | 引擎 | 單筆交易管理（出場 SOP、硬止損、減倉） |
-| `TradingBotV53` | 引擎 | 主循環：掃描→開倉→監控→出場 |
-| `ModernTradingBotGUI` | GUI | 8 分頁控制面板、色彩日誌、HUD 儀表板 |
+| **入場信號** | 2B (rolling min/max) | 2B (Swing Pivot + Neckline) |
+| **加倉** | 無 | 三階段滾倉 (Stage 1→2→3) |
+| **出場** | 1.0R/1.5R/2.5R 分批減倉 | 結構追蹤 + 反向 2B |
+| **止損** | ATR 固定 | Swing Point + 動態移損 |
+| **風險壓縮** | 固定 R | 加倉後風險 ≤ initial R |
+
+V5.3 的 EMA Pullback 和 Volume Breakout 策略仍保留作為互補，走原有的分批減倉 SOP。
+
+**交易所**: Binance Futures (支援 Testnet)
+**交易對**: BTC/ETH/SOL/DOGE + Scanner 動態標的
+
+---
+
+## 專案結構
+
+```
+trading_bot/
+├── bot_config.json              # 交易參數（不含 secrets，可 commit）
+├── secrets.json                 # API keys + Telegram tokens（不可 commit）
+├── requirements.txt             # Python 依賴
+├── .gitignore
+│
+├── v6/                          # V6.0 核心引擎
+│   ├── bot.py                   # 主引擎 TradingBotV6
+│   ├── config.py                # 配置類 ConfigV6
+│   ├── positions.py             # PositionManager 倉位管理（含 Stage trigger）
+│   ├── signals.py               # 升級版 2B 偵測（含穿透深度過濾）
+│   ├── structure.py             # Swing Point 結構分析
+│   ├── persistence.py           # Atomic write 持久化
+│   │
+│   ├── infrastructure/          # 基礎設施層
+│   │   ├── api_client.py        # BinanceFuturesClient（HMAC 簽章 + rate limit）
+│   │   ├── notifier.py          # TelegramNotifier
+│   │   ├── data_provider.py     # MarketDataProvider（統一 retry + sandbox fallback）
+│   │   └── performance_db.py    # PerformanceDB（SQLite，平倉自動寫入 MFE/MAE/R）
+│   │
+│   ├── indicators/              # 技術指標層
+│   │   └── technical.py         # TechnicalAnalysis, DynamicThresholdManager,
+│   │                            # MTFConfirmation, MarketFilter
+│   │
+│   ├── risk/                    # 風險管理層
+│   │   └── manager.py           # PrecisionHandler, RiskManager, SignalTierSystem
+│   │
+│   ├── execution/               # 執行層
+│   │   └── order_engine.py      # OrderExecutionEngine（下單/止損/平倉）
+│   │
+│   ├── strategies/              # 策略層（V7 P2 Strategy Pattern）
+│   │   ├── base.py              # TradingStrategy ABC + StrategyFactory
+│   │   ├── v6_pyramid.py        # V6 滾倉出場邏輯
+│   │   └── v53_sop.py           # V5.3 SOP 出場邏輯
+│   │
+│   └── tests/                   # Pytest 測試（137 tests）
+│       ├── conftest.py          # mock_bot fixture
+│       ├── test_structure.py
+│       ├── test_signals.py
+│       ├── test_persistence.py
+│       ├── test_risk.py
+│       ├── test_v7p1.py
+│       ├── test_v7p2.py
+│       ├── test_handle_close.py
+│       ├── test_sync_positions.py
+│       ├── test_perf_db_quality.py
+│       ├── test_tier_equity_balance.py
+│       ├── test_signal_quality.py
+│       └── test_fill_price.py
+│
+├── scanner/                     # Market Scanner（獨立服務）
+│   ├── market_scanner.py        # 四層掃描器
+│   ├── scanner_config.json      # Scanner 獨立配置
+│   └── README.md
+│
+└── .log/                        # Runtime（自動建立）
+    ├── v6_bot.log
+    ├── v6_trades.log            # 純交易記錄（[TRADE] 標籤）
+    └── scanner.log
+```
+
+Runtime 自動產生的檔案（已在 `.gitignore`）：
+- `positions.json` — 持倉持久化（crash recovery 用）
+- `v6_performance.db` — 交易績效 SQLite
+- `hot_symbols.json` — Scanner 掃描結果
+- `scanner_results.db` — Scanner 歷史記錄 (SQLite)
 
 ---
 
 ## 快速開始
 
-### 環境需求
-
-- Python 3.10+
-- 建議在 Linux / macOS 上執行（Windows 亦可）
-
-### 安裝依賴
+### 1. 安裝依賴
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 啟動 GUI
+### 2. 設定 `secrets.json`
 
-```bash
-python trading_bot_gui_v5.2.py
+在專案根目錄建立 `secrets.json`（已在 `.gitignore`，不可 commit）：
+
+```json
+{
+    "api_key": "你的 Binance API Key",
+    "api_secret": "你的 Binance API Secret",
+    "telegram_bot_token": "選填",
+    "telegram_chat_id": "選填"
+}
 ```
 
-### 首次設定流程
+### 3. 設定 `bot_config.json`
 
-1. 在「API 連線」分頁輸入 Binance Futures Testnet 的 API 金鑰和密鑰
-2. 確認開啟「測試網模式」（預設已開啟）
-3. 在「交易設定」設定交易對、方向與槓桿
-4. 在「風險管理」調整單筆風險與總風險上限
-5. 點擊 HUD 區「儲存設定」
-6. 點擊「啟動系統」連線交易所，確認帳戶資訊
-7. 點擊「開始交易」啟動自動掃描與下單
+```json
+{
+  "sandbox_mode": true,
+  "telegram_enabled": false,
+  "symbols": ["BTC/USDT", "ETH/USDT", "SOL/USDT", "DOGE/USDT"],
+  "trading_direction": "both",
+  "leverage": 3,
+  "risk_per_trade": 0.017,
+  "pyramid_enabled": true,
+  "strategy_use_v6": {
+    "2B_BREAKOUT": true,
+    "EMA_PULLBACK": true,
+    "VOLUME_BREAKOUT": false
+  },
+  "DB_PATH": "v6_performance.db"
+}
+```
+
+> `sandbox_mode: true` 連接 Binance Testnet（模擬交易），正式環境改為 `false`。
+
+### 4. 執行
+
+Bot 和 Scanner 為獨立服務，分別啟動：
+
+```bash
+# Bot（交易引擎）
+python3 v6/bot.py
+
+# Scanner（市場掃描，建議另開終端）
+python3 scanner/market_scanner.py
+```
+
+**systemd 服務（rwUbuntu 部署）**：
+
+```bash
+sudo systemctl start trader.service    # Bot
+sudo systemctl start scanner.service   # Scanner
+sudo systemctl status trader.service   # 查看狀態
+```
+
+### 5. 執行流程
+
+```
+Bot 啟動
+ ├─ startup_diagnostics()   驗證 API / Balance / 數據
+ ├─ _restore_positions()    恢復 positions.json
+ ├─ _adopt_ghost_positions() 接管交易所孤立倉位
+ └─ 主循環（每 60 秒）
+     ├─ scan_for_signals()      多策略信號掃描
+     ├─ _sync_exchange_positions() 四重倉位同步
+     ├─ monitor_positions()     持倉監控 + 加倉/減倉/平倉
+     └─ sleep(CHECK_INTERVAL)
+```
 
 ---
 
-## 兩階段操作流程
+## 架構設計
 
-| 階段 | 按鈕 | 說明 |
+### 模組職責
+
+| 模組 | 類別 | 職責 |
 |------|------|------|
-| 階段一 | `▶ 啟動系統` | 連線交易所，顯示帳戶餘額與現有持倉，不執行交易 |
-| 階段二 | `▶ 開始交易` | 確認連線正確後，啟動自動信號掃描與交易 |
-| 緊急操作 | `⚠ 全部平倉` | 一鍵關閉所有倉位（需確認） |
-| 停止 | `■ 停止系統` | 停止交易並斷開連線 |
+| `bot.py` | `TradingBotV6` | 交易主循環：信號掃描 → 開倉 → 監控 → 平倉 |
+| `config.py` | `ConfigV6` | 合併 V5.3 + V6.0 所有參數（獨立，不依賴外部） |
+| `positions.py` | `PositionManager` | 單 symbol 倉位管理（V6 滾倉 / V5.3 SOP 雙路徑，含 Stage trigger 邏輯） |
+| `signals.py` | `detect_2b_with_pivots()` | 升級版 2B 偵測（Swing Pivot + Neckline + 穿透深度過濾） |
+| `structure.py` | `StructureAnalysis` | Swing Point 偵測 + Neckline 識別 |
+| `persistence.py` | `PositionPersistence` | Atomic write + Crash recovery + Exchange 對帳 |
+
+### 分層架構
+
+原 `core.py` 已拆分為五個獨立子層：
+
+| 層 | 模組 | 類別 | 功能 |
+|----|------|------|------|
+| **基礎設施** | `infrastructure/api_client.py` | `BinanceFuturesClient` | Binance Futures 直接 API（HMAC 簽章 + rate limit throttle） |
+| | `infrastructure/notifier.py` | `TelegramNotifier` | Telegram 推送（信號/平倉通知） |
+| | `infrastructure/data_provider.py` | `MarketDataProvider` | 統一 OHLCV 獲取（retry + sandbox fallback，Scanner 和 Bot 共用） |
+| | `infrastructure/performance_db.py` | `PerformanceDB` | SQLite 績效記錄（MFE/MAE/R/ADX/fakeout_depth） |
+| **技術指標** | `indicators/technical.py` | `TechnicalAnalysis` | 指標計算 + 2B/EMA Pullback/Volume Breakout 偵測 |
+| | | `DynamicThresholdManager` | 動態 ADX/ATR 閾值 |
+| | | `MTFConfirmation` | 多時間框架確認（4H EMA20/50） |
+| | | `MarketFilter` | 市場狀態過濾（ADX / ATR spike） |
+| **風險管理** | `risk/manager.py` | `PrecisionHandler` | 下單精度（exchangeInfo + ccxt + 預設三層 fallback） |
+| | | `RiskManager` | balance / position sizing / stop loss |
+| | | `SignalTierSystem` | 信號分級（Tier A/B/C → 倉位倍率） |
+| **執行引擎** | `execution/order_engine.py` | `OrderExecutionEngine` | 下單 / 止損設置 / 平倉（封裝所有交易所 API 互動） |
+| **策略** | `strategies/base.py` | `TradingStrategy` / `StrategyFactory` | Strategy ABC + 自動 dispatch（by `is_v6_pyramid`） |
+| | `strategies/v6_pyramid.py` | `V6PyramidStrategy` | V6 出場邏輯（結構追蹤 / profit_pullback / 反向 2B） |
+| | `strategies/v53_sop.py` | `V53SopStrategy` | V5.3 出場邏輯（1.0R/1.5R/2.5R SOP） |
+
+### 雙路徑策略架構
+
+Bot 根據信號來源自動選擇路徑：
+
+```
+信號掃描
+ ├─ 2B Breakout（V6 偵測）  → V6 滾倉路徑（V6PyramidStrategy）
+ │   └─ Stage 1 → Stage 2 → Stage 3
+ │
+ ├─ EMA Pullback（V5.3）    → V5.3 SOP 路徑（V53SopStrategy）
+ │   └─ 1.0R → 1.5R → 2.5R 分批減倉
+ │
+ └─ Volume Breakout（V5.3） → V5.3 SOP 路徑（V53SopStrategy）
+     └─ 1.0R → 1.5R → 2.5R 分批減倉
+```
+
+信號優先級：**2B > Volume Breakout > EMA Pullback**
 
 ---
 
-## 多策略信號偵測
+## 交易策略
 
-系統同時執行三種策略，每個掃描周期選擇最優信號：
+### 策略一：2B Breakout（V6.0 滾倉路徑）
 
-| 策略 | 優先級 | 說明 |
-|------|--------|------|
-| 量能突破 | 1 (最高) | 異常放量（2x+ 均量）突破近期高低點，signal_strength 固定為 strong |
-| 2B 突破 | 2 | 假突破反轉形態：價格穿破近期極值後收回，配合量能分級過濾 |
-| EMA 回撤 | 3 | 趨勢中回撤至 EMA 10/20 後反彈，接受較低量能門檻（0.6x） |
+#### 信號偵測
 
-### 信號分級 (A/B/C)
+使用真正的 Swing Point Pivot（左 7 根 + 右 3 根確認）取代 V5.3 的 rolling min/max。
 
-根據以下維度綜合評分，決定入場倉位大小：
+**Bullish 2B**：價格跌破 confirmed swing low 後放量收回
+**Bearish 2B**：價格突破 confirmed swing high 後放量收回
 
-| 評分項目 | 分數 | 條件 |
-|----------|------|------|
-| MTF 對齊 | +2 | 4H EMA 結構確認交易方向 |
-| 市場強度 | +2 | ADX >= 25（強趨勢） |
-| 量能等級 | +2 / +1 | 爆發/強勢 +2，中等 +1 |
-| K 線確認 | +1 | 當前 K 線收盤方向與信號一致 |
+穿透深度過濾：穿透幅度 < 0.3 ATR 視為噪音，不觸發信號（`MIN_FAKEOUT_ATR=0.3`）。
 
-| 等級 | 總分 | 倉位乘數 |
-|------|------|----------|
-| A 級 | 6+ 分 | 100% (`TIER_A_POSITION_MULT`) |
-| B 級 | 4-5 分 | 70% (`TIER_B_POSITION_MULT`) |
-| C 級 | <4 分 | 50% (`TIER_C_POSITION_MULT`) |
+信號同時回傳 **neckline**（反向 swing point），供 Stage 2 觸發使用。
 
-> v5.3 重要變更：信號等級僅影響倉位大小，所有等級共用相同的出場 SOP。
+量能分級：
+- `explosive`：成交量 ≥ 2.5x 均量
+- `strong`：≥ 1.5x
+- `moderate`：≥ 1.0x
+- `weak`：≥ 0.7x（可配置是否接受）
 
----
+#### 三階段滾倉
 
-## v5.3 統一出場 SOP
+**Stage 1 — 試單入場**
 
-所有持倉不論信號等級，均按照以下流程管理：
-
-```
-入場
- │
- ├── 1.0R 獲利 → 移損至 +0.3R（保護性移損，不減倉）
- │
- ├── 1.5R 獲利 → 第一次減倉 30% + 移損至 +0.5R
- │
- ├── 2.5R 獲利 → 第二次減倉 30% + 移損至 +1.5R + 啟動 ATR 追蹤止損
- │
- ├── 尾倉 40% → ATR 追蹤止損管理（ATR × 1.5 乘數）
- │
- ├── 結構破壞 → 價格跌破/突破近 10 根 K 線極值 0.5%，全部平倉
- │
- └── 超時退出 → 持倉超過 24 小時且未達 1.5R，市價全部平倉
-```
-
-### 出場階段詳情
-
-| 階段 | 觸發條件 | 操作 | 剩餘倉位 |
-|------|----------|------|----------|
-| 移損保護 | 浮盈 >= 1.0R | 止損移至 entry + 0.3R | 100% |
-| 首次減倉 | 浮盈 >= 1.5R | 減倉 30%，止損移至 entry + 0.5R | 70% |
-| 二次減倉 | 浮盈 >= 2.5R | 再減 30%，止損移至 entry + 1.5R，啟動追蹤 | 40% |
-| 追蹤止損 | 2.5R 後持續 | ATR × 1.5 追蹤止損管理尾倉 | 40% → 0% |
-| 結構破壞 | 近期結構破裂 | 全部平倉 | 0% |
-| 超時出場 | > MAX_HOLD_HOURS | 市價全平 | 0% |
-
----
-
-## 風控機制
-
-### 倉位計算
-
-```
-position_size = (balance × RISK_PER_TRADE) / |entry_price - stop_loss|
-```
-
-- 套用信號等級乘數（A=1.0, B=0.7, C=0.5）
-- 上限：`MAX_POSITION_PERCENT × LEVERAGE × balance`
-- 止損距離由 ATR 動態決定
-
-### 總風險計算
-
-系統逐筆計算每個持倉的**實際剩餘風險**：
-
-```
-單筆風險 = current_size × |entry_price - current_sl|
-```
-
-- 已減倉的部位：`current_size` 自動反映剩餘數量
-- 止損已移至獲利區（risk <= 0）：風險計為 0
-- 已關閉部位：跳過
-- 總風險 = 所有部位加總 / 帳戶餘額，需 <= `MAX_TOTAL_RISK`
-
-### 其他風控
-
-| 機制 | 說明 |
+| 項目 | 內容 |
 |------|------|
-| 硬止損單 | 在 Binance Futures Testnet 設置 `STOP_MARKET` 條件單（直接 API，非 ccxt） |
-| 重複開倉防護 | 同一標的不重複建倉 |
-| 每組最大持倉 | `MAX_POSITIONS_PER_GROUP` 獨立閘門 |
-| 單筆倉位上限 | 不超過帳戶餘額 × 槓桿的指定百分比 |
+| 觸發 | 2B 信號確認 |
+| 倉位 | `equity × 20% × 33% ≈ 6.6%` |
+| 止損 | swing point ± 0.5 ATR |
+| 記錄 | `initial_R = 風險金額`，`equity_base = 當前 balance` |
+
+**Stage 2 — Neckline 突破加倉**
+
+| 項目 | 內容 |
+|------|------|
+| 觸發 | 收盤突破 neckline + 成交量 ≥ 1.2x 均量（`check_stage2_trigger()` in PositionManager） |
+| 加倉 | `equity × 20% × 37% ≈ 7.4%`（受 risk cap 限制） |
+| 移損 | Stage 1 入場價（保本） |
+| 風險 | total risk ≤ initial_R |
+
+**Stage 3 — EMA 回測加倉**
+
+| 項目 | 內容 |
+|------|------|
+| 觸發 | 前根 K 觸碰 EMA20 + 縮量 + 當根反轉 K（`check_stage3_trigger()` in PositionManager） |
+| 加倉 | `equity × 20% × 30% = 6.0%`（受 risk cap 限制） |
+| 移損 | 最近 confirmed swing point ± 0.5 ATR |
+| 目標 | SL 在均價以上/以下（risk-free） |
+
+#### V6 出場機制（三重）
+
+1. **結構追蹤止損**：每產生新的 confirmed swing point（`find_latest_confirmed_swing()`）就即時移損
+2. **獲利回吐保護**：從 `highest_price` 回撤達 55%（`PROFIT_PULLBACK_THRESHOLD`）→ 強制全平（需先達 0.3R MFE 才啟用）
+3. **反向 2B 出場**：出現反向 2B 信號 → 全部平倉
+
+> 4H EMA20 force exit 暫停中（`V6_4H_EMA20_FORCE_EXIT=False`）：瞬間觸碰即觸發問題，Phase 3 後改 N-bar 確認邏輯再重啟。
+
+出場邏輯集中至 `strategies/v6_pyramid.py`（`V6PyramidStrategy`），回傳結構化 dict `{action, reason, new_sl, close_pct}`。
 
 ---
 
-## 市場過濾器
+### 策略二：EMA Pullback（V5.3 SOP 路徑）
 
-進場前的三重過濾，拒絕不適合交易的市場環境：
+**入場**：EMA 快線 (10) > 慢線 (20)，價格回測 EMA 快線後反彈
 
-| 層級 | 指標 | 邏輯 | 預設閾值 |
-|------|------|------|----------|
-| 1 | ADX | 趨勢強度不足 → 拒絕 | >= 20（動態下限 18） |
-| 2 | ATR 突刺 | 當前 ATR > 均值 × 乘數 → 拒絕 | 乘數 2.0 |
-| 3 | EMA 糾纏 | EMA 10/20 距離 < 閾值 → 拒絕 | 2% |
+**出場 SOP**：
 
-### 動態閾值系統
-
-`DynamicThresholdManager` 根據市場狀態自動調整：
-
-- **低波動**：ATR 乘數降為 1.2，放寬信號要求
-- **正常**：ATR 乘數 1.5
-- **高波動**：ATR 乘數升至 2.0，收緊過濾
+| 階段 | 觸發 | 動作 |
+|------|------|------|
+| 1.0R | 獲利達 1R | 移損至 +0.3R |
+| 1.5R | 獲利達 1.5R | 減倉 30%，移損至 +0.5R |
+| 2.5R | 獲利達 2.5R | 減倉 30%，移損至 +1.5R，啟動 ATR trailing |
 
 ---
 
-## 量能分級系統
+### 策略三：Volume Breakout（V5.3 SOP 路徑）
 
-根據成交量與均量的比值，將量能分為四級：
+**入場**：成交量 > 均量 2.0x，收盤突破近 10 根高點/低點
 
-| 等級 | 條件（vs 均量） | 預設閾值 |
-|------|-----------------|----------|
-| 爆發 (explosive) | >= 2.5x | `VOL_EXPLOSIVE_THRESHOLD` |
-| 強勢 (strong) | >= 1.5x | `VOL_STRONG_THRESHOLD` |
-| 中等 (moderate) | >= 1.0x | `VOL_MODERATE_THRESHOLD` |
-| 弱勢 (weak) | >= 0.7x | `VOL_MINIMUM_THRESHOLD` |
-
-低於最低閾值的信號預設仍可接受（`ACCEPT_WEAK_SIGNALS = True`）。
+**出場**：同 EMA Pullback SOP
 
 ---
 
-## Market Scanner 整合
+### 共用安全機制
 
-Scanner 作為獨立選股器，自動從全市場 USDT 交易對中篩選潛力標的：
+| 機制 | V6 路徑 | V5.3 路徑 |
+|------|---------|----------|
+| 快速止損 | -0.5R 即平倉 | -0.5R 即平倉 |
+| 時間退出 | Stage 1 超過 36h 未升級 | 24h 未達 1.5R |
+| 獲利回吐 | 從高點回撤 ≥ 55%（需 MFE ≥ 0.3R）→ 全平 | N/A |
+| 冷卻期 | 快速止損後 10h 不交易該幣種 | 同左 |
+| 結構破壞 | N/A（用結構追蹤） | swing low/high 破壞 → 平倉 |
+| 硬止損 | 交易所掛單 + 四重 reconciliation | 同左 |
+| 平倉失敗 | rollback 保留持倉，待下週期重試 | 同左 |
+| 平倉優先 | `_handle_close` 先平倉後取消止損單 | 同左 |
+
+---
+
+## Market Scanner
+
+四層過濾架構，從 Binance Futures 全市場篩選最符合 2B 策略的標的。
+
+### 過濾層級
+
+| Layer | 名稱 | 功能 | 關鍵參數 |
+|-------|------|------|----------|
+| Layer 1 | 流動性過濾 | 排除低流動性幣種 | 24H 成交量 ≥ $30M，排除穩定幣/槓桿幣 |
+| Layer 2 | 動能篩選 | 找趨勢中的標的 | ADX ≥ 20，RSI 40~70，ATR% 1.5~15 |
+| Layer 3 | 形態匹配 | 2B 信號 + 預警 | Swing Pivot 偵測，量能確認 |
+| Layer 4 | 相關性過濾 | 分散風險 | 同板塊最多 2 個，相關性 < 0.7 |
+
+### 輸出
+
+Scanner 產生 `hot_symbols.json`，Bot 啟動時讀取：
+
+```json
+{
+  "scan_time": "2026-02-16T15:53:32+00:00",
+  "market_regime": "TRANSITIONING",
+  "total_scanned": 165,
+  "final_count": 6,
+  "hot_symbols": [
+    {
+      "symbol": "ICP/USDT",
+      "rank": 1,
+      "score": 72.4,
+      "signal_side": "LONG",
+      "signal_type": "CONFIRMED_2B",
+      "volume_grade": "explosive",
+      "entry_price": 2.356,
+      "stop_loss": 2.328
+    }
+  ]
+}
+```
+
+> Scanner 永遠使用 Binance 正式網（`SANDBOX_MODE: false`），確保獲取真實市場數據。
+
+---
+
+## 風險管理
+
+### 單筆風險
 
 ```
-Layer 1: 流動性過濾 (24H 成交量)
-Layer 2: 動量過濾 (ADX/RSI/ATR/EMA)
-Layer 3: 形態匹配 (2B 信號 + Swing Point)
-Layer 4: 相關性過濾 (板塊分散)
+risk_amount = balance × RISK_PER_TRADE (1.7%)
 ```
 
-### 啟用 Scanner 聯動
+### V6 滾倉風險壓縮
 
-1. 在 GUI「市場掃描」分頁點擊「立即掃描」
-2. 勾選「使用掃描結果作為交易標的」
-3. 儲存設定 → 啟動系統
+核心原則：**三次加倉，但總風險始終 ≤ initial_R**
 
-Scanner 掃出的 Top 10 標的會取代靜態交易對清單。結果有效期預設 30 分鐘，過期則退回靜態清單。
+```
+Stage 1: size = equity × 20% × 33%
+         initial_R = size × |entry - stop_loss|
 
-### 獨立執行 Scanner
+Stage 2: 加倉 + 移損至保本
+         total_risk = |avg_entry - new_SL| × total_size ≤ initial_R
+         若超標則自動縮減 Stage 2 size
+
+Stage 3: 加倉 + 移損至 swing point
+         目標：SL 在 avg_entry 以上（risk-free 持倉）
+```
+
+### Tier 系統（信號分級）
+
+三段加倉均乘以 tier 倍率，Tier A 全部吃滿，Tier C 縮半：
+
+| 等級 | 倉位倍率 | Stage 1 實際 equity% |
+|------|----------|----------------------|
+| Tier A | 1.0x | ~6.6% |
+| Tier B | 0.7x | ~4.6% |
+| Tier C | 0.5x | ~3.3% |
+
+### V5.3 Risk-Based Sizing
+
+```
+risk_amount = balance × 1.7%
+stop_distance = |entry - stop_loss| / entry
+position_value = risk_amount / stop_distance
+position_size = position_value / entry
+上限：position_value ≤ balance × V53_EQUITY_CAP_PERCENT(10%) × leverage
+```
+
+### 總風險控制
+
+| 參數 | 值 | 說明 |
+|------|------|------|
+| `RISK_PER_TRADE` | 1.7% | 單筆最大風險 |
+| `MAX_TOTAL_RISK` | 5% | 所有持倉風險總和上限 |
+| `EQUITY_CAP_PERCENT` | 20% | V6 單筆最大 equity 暴露（三段合計） |
+| `V53_EQUITY_CAP_PERCENT` | 10% | V5.3 獨立 equity 上限 |
+| `MAX_POSITIONS_PER_GROUP` | 6 | 最大同時持倉數 |
+| `LEVERAGE` | 3x | 槓桿倍數 |
+
+---
+
+## 配置系統
+
+### ConfigV6
+
+所有參數集中在 `v6/config.py` 的 `ConfigV6` 類別，分為：
+
+**V5.3 基礎參數**（交易所 / 風險 / 指標 / 時間框架 / 市場過濾 / 出場 SOP）
+**V6.0 滾倉參數**（三段分配 / Swing Point / Stage 觸發 / V6 出場）
+**系統參數**（持久化路徑 / Scanner 整合 / Debug）
+
+### 載入方式
+
+`ConfigV6.load_from_json("bot_config.json")` 從 JSON 覆寫 class attributes，並自動讀取同目錄 `secrets.json` 注入 API keys。
+JSON key 自動映射為大寫（例：`risk_per_trade` → `RISK_PER_TRADE`）。
+載入後自動執行 `validate()`，驗證：
+- Stage ratio 加總 = 1.0
+- Equity cap 在 1%~50% 之間
+- Swing right bars ≥ 2
+- Stage 2 volume mult ≥ 1.0
+
+### 關鍵 V6 參數
+
+| 參數 | 值 | 說明 |
+|------|--------|------|
+| `PYRAMID_ENABLED` | `true` | 啟用三段滾倉 |
+| `EQUITY_CAP_PERCENT` | 0.20 | V6 三段合計最大 20% equity |
+| `V53_EQUITY_CAP_PERCENT` | 0.10 | V5.3 獨立最大 10% equity |
+| `STAGE1_RATIO` | 0.33 | Stage 1 佔 33% |
+| `STAGE2_RATIO` | 0.37 | Stage 2 佔 37% |
+| `STAGE3_RATIO` | 0.30 | Stage 3 佔 30% |
+| `SWING_LEFT_BARS` | 7 | Swing point 左側確認根數 |
+| `SWING_RIGHT_BARS` | 3 | Swing point 右側確認根數 |
+| `SL_ATR_BUFFER` | 0.8 | 止損緩衝（0.8 ATR） |
+| `STAGE2_VOLUME_MULT` | 1.2 | Neckline 突破放量門檻 |
+| `PROFIT_PULLBACK_THRESHOLD` | 0.55 | 從高點回撤 55% 即全平（V6 路徑） |
+| `MIN_MFE_R_FOR_PULLBACK` | 0.3 | 啟用 profit_pullback 的最低 MFE（R 倍數） |
+| `MIN_FAKEOUT_ATR` | 0.3 | 2B 穿透深度下限（< 0.3 ATR 視為噪音） |
+| `EARLY_STOP_R_THRESHOLD` | 0.75 | 快速止損（-0.75R） |
+| `V6_STAGE1_MAX_HOURS` | 36 | V6 路徑 Stage 1 最大持倉時間 |
+| `STAGE1_MAX_HOURS` | 24 | V5.3 路徑時間退出 |
+| `EARLY_EXIT_COOLDOWN_HOURS` | 10 | 快速止損後冷卻時間 |
+| `V6_4H_EMA20_FORCE_EXIT` | `false` | 4H EMA20 強制出場（暫停中） |
+
+### 策略開關（strategy_use_v6）
+
+```json
+"strategy_use_v6": {
+  "2B_BREAKOUT": true,
+  "EMA_PULLBACK": true,
+  "VOLUME_BREAKOUT": false
+}
+```
+
+### 信號分級倍率
+
+| 等級 | 倉位倍率 | 說明 |
+|------|----------|------|
+| Tier A | 1.0x | 最強信號，全倉位 |
+| Tier B | 0.7x | 中等信號 |
+| Tier C | 0.5x | 最弱可接受信號 |
+
+---
+
+## 持久化與 Crash Recovery
+
+### Atomic Write
+
+防止 crash 時檔案損壞：
+
+```
+1. 寫入 .positions.json.tmp_XXXX（臨時檔）
+2. flush + fsync（確保寫入磁碟）
+3. rename → positions.json（OS 層級 atomic operation）
+```
+
+### 啟動恢復
+
+Bot 啟動時：
+1. `_restore_positions()` — 從 `positions.json` 恢復所有 PositionManager
+2. `_adopt_ghost_positions()` — 掃描交易所持倉，接管 positions.json 未記錄的倉位（幽靈倉位）
+3. 主循環每次執行 `_sync_exchange_positions()` — 四重防護 reconciliation
+
+### 四重同步防護（_sync_exchange_positions）
+
+| 防護 | 觸發 | 行為 |
+|------|------|------|
+| 1 | API 錯誤回 None | 跳過整次同步（防止誤殺） |
+| 2 | bot 有、exchange 無 | 標記 hard_stop_hit → 觸發平倉流程 |
+| 3 | 兩邊都有，size 差 > 5% | 告警 [SIZE_MISMATCH] |
+| 4 | exchange 有、bot 無 | 告警 [GHOST_POSITION] |
+
+### 平倉失敗保護
+
+`_handle_close()` 採用 try-except + rollback：
+- 先移除止損單進入 `pending_stop_cancels`（平倉優先）
+- 平倉下單失敗 → rollback：`pm.is_closed = False`，立即 `_save_positions()`，待下週期重試
+
+### 備份
+
+重大操作（Stage 升級、部分平倉）前自動備份 `positions.json.bak`。
+
+---
+
+## 測試
+
+137 個 pytest 測試，全部通過。
 
 ```bash
-# 單次掃描
-python -m scanner.market_scanner --once
+# 執行全部測試
+python3 -m pytest v6/tests/ -v
 
-# 持續掃描 (預設每 15 分鐘)
-python -m scanner.market_scanner
-
-# 自訂配置
-python -m scanner.market_scanner --config scanner/scanner_config.json
+# 執行特定模組
+python3 -m pytest v6/tests/test_signals.py -v
+python3 -m pytest v6/tests/test_persistence.py -v
+python3 -m pytest v6/tests/test_fill_price.py -v
 ```
 
-### GUI 掃描功能
+### 測試覆蓋
 
-- 手動 / 自動定時掃描（可設間隔分鐘數）
-- 市場概況：市場狀態、BTC 趨勢、平均 ADX、多空比例
-- 掃描結果表：排名、標的、方向、評分、入場價、止損價、R/R、量能等級
-- 預警信號（Pre-2B）列表
-- 結果匯出為 JSON
-
----
-
-## GUI 控制面板
-
-### 整體設計
-
-- **主題**：FinTech 深色主題 (`#080B11` 四層深度背景)
-- **框架**：CustomTkinter 現代化元件
-- **跨平台字體**：Linux (Noto Sans CJK TC)、macOS (PingFang TC)、Windows (Microsoft JhengHei UI)
-- **日誌**：色彩分級 — 時間灰色、資訊/成功/警告/錯誤各有專色，自動裁剪超過 1500 行
-
-### HUD 儀表板
-
-頂部即時顯示 5 項指標：
-
-| 指標 | 說明 |
-|------|------|
-| 帳戶餘額 | USDT 餘額 |
-| 活躍持倉 | 當前 / 最大持倉數 |
-| 24H 盈虧 | 未實現盈虧 |
-| 信號產生 | 本次運行偵測到的信號數 |
-| 掃描標的 | Scanner 掃描的標的數量 |
-
-### 8 個設定分頁
-
-| 分頁 | 內容 |
-|------|------|
-| **API 連線** | 交易所選擇（Binance/Bybit/OKX/Bitget）、API 金鑰、測試網開關、Telegram 通知設定 |
-| **交易設定** | 交易模式（Spot/Future）、方向（Long/Short/Both）、槓桿（1-20x）、硬止損開關、交易對文字框、檢查間隔、最大持倉時間 |
-| **風險管理** | 單筆風險（滑桿 1%-10%）、最大總風險（1%-20%）、最大持倉數（1-10）、單筆最大倉位%（10%-50%）、技術指標參數（回溯週期、均量週期、ATR 週期/乘數） |
-| **市場過濾** | 市場過濾開關、ADX 閾值（5-40）、ATR 突出乘數（1.0-5.0）、均線糾纏閾值（0.01-0.10） |
-| **量能分級** | 量能分級開關、爆發/強勢/中等/最低閾值滑桿、弱勢信號接受開關 |
-| **出場設定** | 1.5R 減倉比例（10%-60%）、2.5R 減倉比例（10%-60%）、出場 SOP 流程說明 |
-| **進階功能** | MTF 確認 / 動態閾值 / 分級入場 / EMA 回撤 / 量能突破 / 結構破壞出場 — 6 個功能開關 + A/B/C 倉位乘數滑桿 |
-| **市場掃描** | 立即掃描 / 停止 / 自動掃描開關、掃描間隔、市場概況、Top 10 結果表、Pre-2B 預警、匯出按鈕、使用掃描結果 Checkbox |
-
----
-
-## 完整配置參數
-
-所有配置透過 GUI 管理，存於 `bot_config.json`。Config 類使用 `_KEY_MAP` 字典自動映射 JSON key 到類屬性。
-
-### API 與連線
-
-| 參數 | JSON Key | 說明 | 預設值 |
-|------|----------|------|--------|
-| 交易所 | `exchange` | binance / bybit / okx / bitget | binance |
-| 測試網 | `sandbox_mode` | 是否使用測試網 | true |
-| Telegram | `telegram_enabled` | 啟用通知 | false |
-
-### 交易模式
-
-| 參數 | JSON Key | 說明 | 預設值 |
-|------|----------|------|--------|
-| 交易模式 | `trading_mode` | future / spot | future |
-| 交易方向 | `trading_direction` | both / long_only / short_only | both |
-| 槓桿 | `leverage` | 1-20x | 5 |
-| 硬止損 | `use_hard_stop_loss` | 交易所端止損單 | true |
-| 檢查間隔 | `check_interval` | 秒 | 60 |
-
-### 風險管理
-
-| 參數 | JSON Key | 說明 | 預設值 |
-|------|----------|------|--------|
-| 單筆風險 | `risk_per_trade` | 每筆交易最大虧損占比 | 0.01 (1%) |
-| 總風險上限 | `max_total_risk` | 所有持倉最大風險占比 | 0.05 (5%) |
-| 最大持倉數 | `max_positions_per_group` | 同時持倉上限 | 2 |
-| 單筆倉位上限 | `max_position_percent` | 單筆最大使用餘額比例 | 0.30 (30%) |
-
-### 技術指標
-
-| 參數 | JSON Key | 說明 | 預設值 |
-|------|----------|------|--------|
-| 回溯週期 | `lookback_period` | Swing Point 回溯 K 線數 | 20 |
-| 均量週期 | `volume_ma_period` | 成交量移動平均週期 | 20 |
-| ATR 週期 | `atr_period` | ATR 計算週期 | 14 |
-| ATR 乘數 | `atr_multiplier` | 止損距離 = ATR × 乘數 | 1.5 |
-
-### 市場過濾
-
-| 參數 | JSON Key | 說明 | 預設值 |
-|------|----------|------|--------|
-| 啟用過濾 | `enable_market_filter` | 總開關 | true |
-| ADX 閾值 | `adx_threshold` | 趨勢強度最低門檻 | 20 |
-| ATR 突刺乘數 | `atr_spike_multiplier` | 極端波動過濾 | 2.0 |
-| EMA 糾纏閾值 | `ema_entanglement_threshold` | 盤整過濾 | 0.02 |
-
-### 量能分級
-
-| 參數 | JSON Key | 說明 | 預設值 |
-|------|----------|------|--------|
-| 啟用分級 | `enable_volume_grading` | 總開關 | true |
-| 爆發量 | `vol_explosive_threshold` | >= 2.5x 均量 | 2.5 |
-| 強勢量 | `vol_strong_threshold` | >= 1.5x 均量 | 1.5 |
-| 中等量 | `vol_moderate_threshold` | >= 1.0x 均量 | 1.0 |
-| 最低量 | `vol_minimum_threshold` | >= 0.7x 均量 | 0.7 |
-| 接受弱勢 | `accept_weak_signals` | 允許低量能信號 | true |
-
-### v5.3 出場 SOP
-
-| 參數 | JSON Key | 說明 | 預設值 |
-|------|----------|------|--------|
-| 1.5R 減倉% | `first_partial_pct` | 第一次減倉比例 | 30 |
-| 2.5R 減倉% | `second_partial_pct` | 第二次減倉比例 | 30 |
-| 追蹤 ATR 乘數 | `aplus_trailing_atr_mult` | 追蹤止損距離 | 1.5 |
-| 最大持倉時間 | `max_hold_hours` | 超時強制平倉（小時） | 24 |
-
-### 進階功能開關
-
-| 參數 | JSON Key | 說明 | 預設值 |
-|------|----------|------|--------|
-| MTF 確認 | `enable_mtf_confirmation` | 4H 多時間框架確認 | true |
-| 動態閾值 | `enable_dynamic_thresholds` | ADX/ATR 自動調整 | true |
-| 分級入場 | `enable_tiered_entry` | A/B/C 信號分級 | true |
-| EMA 回撤 | `enable_ema_pullback` | EMA 回撤策略 | true |
-| 量能突破 | `enable_volume_breakout` | 量能突破策略 | true |
-| 結構破壞 | `enable_structure_break_exit` | 結構破壞出場 | true |
-
-### 分層倉位
-
-| 參數 | JSON Key | 說明 | 預設值 |
-|------|----------|------|--------|
-| A 級乘數 | `tier_a_position_mult` | 最佳信號倉位 | 1.0 |
-| B 級乘數 | `tier_b_position_mult` | 良好信號倉位 | 0.7 |
-| C 級乘數 | `tier_c_position_mult` | 基本信號倉位 | 0.5 |
-
-### Scanner 整合
-
-| 參數 | JSON Key | 說明 | 預設值 |
-|------|----------|------|--------|
-| 使用 Scanner | `use_scanner_symbols` | 使用掃描結果作為標的 | false |
-| 結果檔案 | `scanner_json_path` | Scanner 輸出路徑 | hot_symbols.json |
-| 結果有效期 | `scanner_max_age_minutes` | 過期退回靜態清單 | 30 |
+| 測試模組 | 測試數 | 覆蓋範圍 |
+|----------|--------|----------|
+| `test_structure.py` | 9 | Swing point 偵測、Neckline 識別、edge cases |
+| `test_signals.py` | 13 | Bullish/Bearish 2B、量能過濾、穿透深度過濾 |
+| `test_risk.py` | 13 | Stage 2/3 sizing、risk cap、proportional scaling |
+| `test_persistence.py` | 30 | Atomic write、Load/Save、Exchange reconciliation、出場決策 16 場景 |
+| `test_v7p1.py` | 3 | Rate limit throttle、平倉優先、pending_stop_cancels |
+| `test_v7p2.py` | 16 | Strategy Pattern dispatch、V6/V53 出場邏輯 |
+| `test_handle_close.py` | 5 | 平倉失敗 rollback、save_positions、stop_order 邊界 |
+| `test_sync_positions.py` | 7 | 四重防護、API error guard、ghost detection |
+| `test_perf_db_quality.py` | 8 | capture_ratio 公式、MFE/MAE fallback |
+| `test_tier_equity_balance.py` | 13 | Stage 2/3 tier_mult、V5.3 equity_cap、sizing ratio |
+| `test_signal_quality.py` | 4 | MFE 門檻、Strategy dispatch V53 |
+| `test_fill_price.py` | 8 | avgPrice 擷取、fallback、Stage 1 integration |
 
 ---
 
 ## 技術棧
 
-| 套件 | 版本 | 用途 |
-|------|------|------|
-| ccxt | >= 4.0.0 | 交易所 API（含 Futures 支援） |
-| pandas | >= 2.0.0 | 數據處理 |
-| numpy | >= 1.24.0 | 數值運算 |
-| pandas-ta | >= 0.3.14b | 技術指標（ADX、ATR、EMA、RSI） |
-| customtkinter | >= 5.2.0 | 現代化 GUI 框架 |
-| pillow | >= 10.0.0 | 圖像處理（GUI 支援） |
-| requests | >= 2.28.0 | HTTP 請求（Telegram 通知 + Binance 直接 API） |
-| python-dateutil | >= 2.8.0 | 日期處理 |
+| 類別 | 技術 |
+|------|------|
+| 語言 | Python 3.10+ |
+| 交易所 API | CCXT + Binance Futures 直接 API（HMAC 簽章） |
+| 技術指標 | pandas-ta（EMA / ATR / ADX / RSI） |
+| 數據處理 | pandas + numpy |
+| 通知 | Telegram Bot API |
+| 測試 | pytest |
+| 持久化 | JSON (atomic write) + SQLite (scanner history + performance DB) |
+
+### 依賴套件
+
+```
+ccxt>=4.0.0
+pandas>=2.0.0
+numpy>=1.24.0
+pandas-ta>=0.3.14b
+requests>=2.28.0
+python-dateutil>=2.8.0
+```
 
 ---
 
-## v5.3 版本變更摘要
+## 日誌系統
 
-相對於 v5.2 的主要變更：
+所有日誌存放在 `.log/` 目錄：
 
-| 項目 | v5.2 | v5.3 |
+| 檔案 | 來源 | 說明 |
 |------|------|------|
-| 出場機制 | A/B/C 三套不同出場流程 | 統一 SOP，信號等級僅影響倉位 |
-| 出場階段 | 1.5R / 3.0R 減倉 | 1.0R 移損 → 1.5R 減倉 → 2.5R 減倉+追蹤 |
-| 時間退出 | 無 | 24 小時超時強制平倉 |
-| ADX 閾值 | 15 | 20（動態下限 18） |
-| 結構破壞出場 | 預設關閉 | 預設開啟 |
-| 總風險計算 | `持倉數 × 固定風險` | 逐筆計算實際剩餘風險（考慮減倉+移損） |
+| `v6_bot.log` | `v6/bot.py` | Bot 交易日誌（信號/開倉/平倉/移損） |
+| `v6_trades.log` | `v6/bot.py` | 純交易記錄（僅含 `[TRADE]` 標籤訊息） |
+| `scanner.log` | `scanner/` | Scanner 掃描日誌 |
+
+日誌採用 `RotatingFileHandler`，單檔上限 5MB，最多保留 3 個備份。
 
 ---
 
-*文檔版本：v5.3*
-*最後更新：2026-02-11*
+## 注意事項
+
+- `secrets.json` 含 API keys，**不可** commit 到版本控制（已在 `.gitignore`）
+- `bot_config.json` 不含 secrets，可安全 commit
+- Scanner 永遠連接 Binance 正式網取得真實數據，Bot 的 `sandbox_mode` 只控制下單端
+- `--dry-run` 模式下所有訂單只會 log 不會送出（`V6_DRY_RUN=True`）
+- 首次使用建議先確認 `sandbox_mode: true` 觀察信號品質
+- 硬止損掛單確保即使 Bot 斷線，交易所也會自動執行止損

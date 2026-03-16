@@ -1,0 +1,213 @@
+"""
+V6.0 信號偵測模組
+
+升級版 2B 偵測：用真正的 Swing Point Pivot（左右側確認）取代 V5.3 的 rolling min/max。
+回傳含 neckline 的信號詳情，供 PositionManager Stage 2 觸發使用。
+"""
+
+import logging
+import pandas as pd
+from typing import Tuple, Optional, Dict
+
+from trader.structure import StructureAnalysis
+
+logger = logging.getLogger(__name__)
+
+
+def detect_2b_with_pivots(
+    df: pd.DataFrame,
+    left_bars: int = 5,
+    right_bars: int = 2,
+    vol_minimum_threshold: float = 0.7,
+    accept_weak_signals: bool = True,
+    enable_volume_grading: bool = True,
+    vol_explosive_threshold: float = 2.5,
+    vol_strong_threshold: float = 1.5,
+    vol_moderate_threshold: float = 1.0,
+    min_fakeout_atr: float = 0.3,
+) -> Tuple[bool, Optional[Dict]]:
+    """
+    升級版 2B 偵測（V6.0）
+
+    核心改動：
+    1. 用 confirmed swing points（左右側驗證）取代 rolling min/max
+    2. 回傳 neckline（反向 confirmed swing point）
+    3. 保留 V5.3 的量能分級系統
+
+    2B 定義：
+    - Bullish 2B: 價格跌破 confirmed swing low 後放量收回
+    - Bearish 2B: 價格突破 confirmed swing high 後放量收回
+
+    Args:
+        df: 1H OHLCV DataFrame（需含 atr, vol_ma columns）
+        left_bars: Swing point 左側 lookback
+        right_bars: Swing point 右側確認
+        vol_minimum_threshold: 最低量比門檻
+        accept_weak_signals: 是否接受弱量信號
+        enable_volume_grading: 啟用量能分級
+        vol_explosive_threshold: 爆量門檻
+        vol_strong_threshold: 強量門檻
+        vol_moderate_threshold: 中量門檻
+
+    Returns:
+        (has_signal, signal_details)
+        signal_details 含 neckline 欄位
+    """
+    min_bars = left_bars + right_bars + 5  # 至少需要夠多 K 線
+    if df is None or len(df) < min_bars:
+        return False, None
+
+    # === 1. 找 confirmed swing points ===
+    swings = StructureAnalysis.find_swing_points(df, left_bars, right_bars)
+
+    last_swing_low = swings['last_swing_low']
+    last_swing_high = swings['last_swing_high']
+
+    # 需要至少一個 swing point 才能偵測 2B
+    if last_swing_low is None and last_swing_high is None:
+        return False, None
+
+    current = df.iloc[-1]
+    close = current['close']
+    low = current['low']
+    high = current['high']
+    atr = current.get('atr', 0)
+    volume = current.get('volume', 0)
+    vol_ma = current.get('vol_ma', 0)
+
+    signal_side = None
+    signal_details = {}
+
+    # === 2. Bullish 2B 偵測 ===
+    # 價格跌破 confirmed swing low 後收回（收盤在 swing low 上方）
+    if last_swing_low is not None:
+        if low < last_swing_low and close > last_swing_low:
+            signal_side = 'LONG'
+
+            # Neckline = entry 以上最近的 confirmed swing high（阻力位）
+            neckline = StructureAnalysis.find_neckline(df, 'LONG', swings, left_bars, right_bars, entry_price=close)
+
+            signal_details = {
+                'side': 'LONG',
+                'entry_price': close,
+                'lowest_point': low,
+                'stop_level': last_swing_low,  # 止損在 swing low
+                'target_ref': last_swing_high,  # 目標參考
+                'prev_low': last_swing_low,
+                'prev_high': last_swing_high,
+                'neckline': neckline,  # V6.0 新增
+                'atr': atr,
+                'volume': volume,
+                'vol_ma': vol_ma,
+                'signal_time': current.get('timestamp'),
+                'candle_confirmed': close > current['open'],
+                'detection_method': 'swing_pivot',  # 標記為 V6.0 方法
+            }
+
+    # === 3. Bearish 2B 偵測 ===
+    # 價格突破 confirmed swing high 後收回（收盤在 swing high 下方）
+    if signal_side is None and last_swing_high is not None:
+        if high > last_swing_high and close < last_swing_high:
+            signal_side = 'SHORT'
+
+            # Neckline = entry 以下最近的 confirmed swing low（支撐位）
+            neckline = StructureAnalysis.find_neckline(df, 'SHORT', swings, left_bars, right_bars, entry_price=close)
+
+            signal_details = {
+                'side': 'SHORT',
+                'entry_price': close,
+                'highest_point': high,
+                'stop_level': last_swing_high,  # 止損在 swing high
+                'target_ref': last_swing_low,  # 目標參考
+                'prev_low': last_swing_low,
+                'prev_high': last_swing_high,
+                'neckline': neckline,  # V6.0 新增
+                'atr': atr,
+                'volume': volume,
+                'vol_ma': vol_ma,
+                'signal_time': current.get('timestamp'),
+                'candle_confirmed': close < current['open'],
+                'detection_method': 'swing_pivot',
+            }
+
+    if signal_side is None:
+        return False, None
+
+    # === 4. 量能分級（沿用 V5.3）===
+    vol_ratio = volume / vol_ma if vol_ma > 0 else 0
+
+    if vol_ratio >= vol_explosive_threshold:
+        signal_strength = 'explosive'
+    elif vol_ratio >= vol_strong_threshold:
+        signal_strength = 'strong'
+    elif vol_ratio >= vol_moderate_threshold:
+        signal_strength = 'moderate'
+    else:
+        signal_strength = 'weak'
+
+    signal_details['vol_ratio'] = vol_ratio
+    signal_details['signal_strength'] = signal_strength
+
+    # === 5. 量能過濾（沿用 V5.3 邏輯）===
+    if enable_volume_grading:
+        if vol_ratio < vol_minimum_threshold:
+            logger.debug(
+                f"2B {signal_side} filtered: vol {vol_ratio:.2f}x < min {vol_minimum_threshold}x"
+            )
+            return False, None
+
+        if not accept_weak_signals and signal_strength == 'weak':
+            logger.debug(
+                f"2B {signal_side} filtered: weak signal ({vol_ratio:.2f}x), weak signals disabled"
+            )
+            return False, None
+    else:
+        if volume <= vol_ma:
+            return False, None
+
+    # === 6. 深度過濾（最小 min_fakeout_atr ATR，最大 3 ATR）===
+    if signal_side == 'LONG':
+        fakeout_depth = abs(low - last_swing_low)
+    else:
+        fakeout_depth = abs(high - last_swing_high)
+
+    fakeout_depth_atr = round(fakeout_depth / atr, 3) if atr > 0 else 0.0
+
+    # 下限：穿透太淺視為噪音（非真正流動性獵殺）
+    if atr > 0 and fakeout_depth < atr * min_fakeout_atr:
+        logger.debug(
+            f"2B {signal_side} filtered: penetration too shallow "
+            f"({fakeout_depth_atr:.2f}x ATR < {min_fakeout_atr}x ATR)"
+        )
+        return False, None
+
+    # 上限：穿透太深視為無效
+    if atr > 0 and fakeout_depth > atr * 3:
+        logger.debug(
+            f"2B {signal_side} filtered: fakeout too deep "
+            f"({fakeout_depth:.2f} > {atr * 3:.2f})"
+        )
+        return False, None
+
+    signal_details['fakeout_depth_atr'] = fakeout_depth_atr
+
+    # === 7. 計算止損距離（用 swing point + ATR buffer）===
+    if signal_side == 'LONG':
+        # 止損 = swing low - 0.5 * ATR（給緩衝）
+        sl_buffer = atr * 0.5 if atr > 0 else 0
+        signal_details['stop_loss'] = last_swing_low - sl_buffer
+    else:
+        sl_buffer = atr * 0.5 if atr > 0 else 0
+        signal_details['stop_loss'] = last_swing_high + sl_buffer
+
+    neck_str = f"${signal_details['neckline']:.2f}" if signal_details['neckline'] else 'N/A'
+    swing_type = 'low' if signal_side == 'LONG' else 'high'
+    logger.info(
+        f"[V6] 2B {signal_side} detected: "
+        f"price=${close:.2f} | swing_{swing_type}="
+        f"${signal_details['stop_level']:.2f} | "
+        f"neckline={neck_str} | "
+        f"vol={vol_ratio:.2f}x ({signal_strength})"
+    )
+
+    return True, signal_details

@@ -10,8 +10,8 @@ from datetime import datetime, timezone, timedelta
 from unittest.mock import MagicMock, patch
 import pandas as pd
 
-from v6.strategies.v6_pyramid import V6PyramidStrategy
-from v6.config import ConfigV6 as Cfg
+from trader.strategies.v6_pyramid import V6PyramidStrategy
+from trader.config import ConfigV6 as Cfg
 
 
 def make_pm(entry_time_offset_hours: float, neckline: float = 105.0,
@@ -67,7 +67,7 @@ class TestV6TimeoutConfig:
         # 確保 highest_price 沒超過 pullback 門檻
         pm.highest_price = 100.3   # MFE = 0.15R < MIN_MFE_R=0.3，不觸發 pullback
 
-        with patch('v6.strategies.base._apply_common_pre', return_value=None):
+        with patch('trader.strategies.base._apply_common_pre', return_value=None):
             decision = strategy.get_decision(pm, 100.3, df)
 
         # 24.5h 不該 timeout（V6 應用 36h）
@@ -82,7 +82,7 @@ class TestV6TimeoutConfig:
 
         df = make_df_1h(close=100.1)
 
-        with patch('v6.strategies.base._apply_common_pre', return_value=None):
+        with patch('trader.strategies.base._apply_common_pre', return_value=None):
             decision = strategy.get_decision(pm, 100.1, df)
 
         assert decision['action'] == 'CLOSE'
@@ -90,7 +90,7 @@ class TestV6TimeoutConfig:
 
     def test_v53_uses_24h_timeout(self):
         """V53 仍用 STAGE1_MAX_HOURS (24h)"""
-        from v6.strategies.v53_sop import V53SopStrategy
+        from trader.strategies.v53_sop import V53SopStrategy
         strategy = V53SopStrategy()
         pm = make_pm(entry_time_offset_hours=24.5)
         pm.is_v6_pyramid = False
@@ -98,7 +98,7 @@ class TestV6TimeoutConfig:
 
         df = make_df_1h(close=100.1)
 
-        with patch('v6.strategies.base._apply_common_pre', return_value=None):
+        with patch('trader.strategies.base._apply_common_pre', return_value=None):
             decision = strategy.get_decision(pm, 100.1, df)
 
         # V53 在 24.5h 應該 timeout
@@ -117,7 +117,7 @@ class TestStage2TriggerDiagnosis:
 
         df = make_df_1h(close=106.0, vol_ratio=1.5)  # 突破 neckline + 1.5x 量
 
-        with patch('v6.strategies.base._apply_common_pre', return_value=None):
+        with patch('trader.strategies.base._apply_common_pre', return_value=None):
             decision = strategy.get_decision(pm, 106.0, df)
 
         assert decision['action'] == 'STAGE2_TRIGGER'
@@ -132,7 +132,7 @@ class TestStage2TriggerDiagnosis:
 
         df = make_df_1h(close=106.0, vol_ratio=0.8)  # 縮量
 
-        with patch('v6.strategies.base._apply_common_pre', return_value=None):
+        with patch('trader.strategies.base._apply_common_pre', return_value=None):
             decision = strategy.get_decision(pm, 106.0, df)
 
         assert decision['action'] != 'STAGE2_TRIGGER'
@@ -149,7 +149,7 @@ class TestStage2TriggerDiagnosis:
         df = make_df_1h(close=current_price, vol_ratio=1.5)
         pm.check_stage2_trigger = MagicMock(return_value=True)
 
-        with patch('v6.strategies.base._apply_common_pre', return_value=None):
+        with patch('trader.strategies.base._apply_common_pre', return_value=None):
             decision = strategy.get_decision(pm, current_price, df)
 
         # 45% pullback < 55% threshold → profit_pullback 不觸發 → Stage 2 應觸發

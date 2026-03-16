@@ -18,9 +18,9 @@ from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     import pandas as pd
-    from v6.positions import PositionManager
+    from trader.positions import PositionManager
 
-from v6.strategies.base import TradingStrategy, DecisionDict, _apply_common_pre
+from trader.strategies.base import TradingStrategy, DecisionDict, _apply_common_pre
 
 logger = logging.getLogger(__name__)
 
@@ -48,8 +48,8 @@ class V6PyramidStrategy(TradingStrategy):
         7. Stage Trigger 檢查
         8. ACTIVE（持倉中）
         """
-        from v6.config import ConfigV6 as Cfg
-        from v6.structure import StructureAnalysis
+        from trader.config import ConfigV6 as Cfg
+        from trader.structure import StructureAnalysis
 
         result: DecisionDict = {
             "action": "ACTIVE",

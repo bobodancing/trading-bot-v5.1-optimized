@@ -5,8 +5,10 @@
 .claude/
 
 # Runtime generated
+.log/
 hot_symbols.json
 scanner_results.db
+positions.json
 
 # Python
 __pycache__/
@@ -27,3 +29,6 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+
+# Secrets
+secrets.json

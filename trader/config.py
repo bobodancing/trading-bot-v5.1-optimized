@@ -178,6 +178,22 @@ class ConfigV6:
     # 快速止損/時間退出後的冷卻時間
     EARLY_EXIT_COOLDOWN_HOURS = 10
 
+    # === Risk Guard V1 ===
+
+    # BTC 趨勢過濾：逆 BTC 趨勢時降低倉位乘數（0.0 = 完全禁止，0.5 = 半倉）
+    # 判定方式：BTC/USDT 1D EMA20 vs EMA50
+    BTC_TREND_FILTER_ENABLED = True
+    BTC_COUNTER_TREND_MULT = 0.0  # 0.0 = 禁止逆勢進場
+
+    # SL 距離上限（佔 entry price 的百分比）
+    # 超過此距離的交易直接跳過（防小幣結構寬導致單筆巨虧）
+    MAX_SL_DISTANCE_PCT = 0.06  # 6%
+
+    # 同幣虧損冷卻（小時）
+    # 某 symbol 最近一筆虧損後，需等待此時間才能再進場
+    # 持久化（基於 perf_db 查詢，restart 不遺失）
+    SYMBOL_LOSS_COOLDOWN_HOURS = 24
+
     # 策略選擇器
     STRATEGY_USE_V6 = {
         '2B_BREAKOUT': True,
@@ -194,7 +210,7 @@ class ConfigV6:
 
     @classmethod
     def get_strategy(cls) -> 'TradingStrategy':
-        from v6.strategies import StrategyFactory
+        from trader.strategies import StrategyFactory
         return StrategyFactory.create_strategy(cls.STRATEGY)
 
     # ==================== Persistence ====================

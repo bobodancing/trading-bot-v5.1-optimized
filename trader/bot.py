@@ -12,6 +12,7 @@ import sys
 import os
 import time
 import json
+import signal
 import logging
 import logging.handlers
 from pathlib import Path
@@ -25,25 +26,25 @@ import ccxt
 import pandas as pd
 
 # 基礎設施層
-from v6.infrastructure.api_client import BinanceFuturesClient
-from v6.infrastructure.notifier import TelegramNotifier
-from v6.infrastructure.data_provider import MarketDataProvider
-from v6.infrastructure.performance_db import PerformanceDB
+from trader.infrastructure.api_client import BinanceFuturesClient
+from trader.infrastructure.notifier import TelegramNotifier
+from trader.infrastructure.data_provider import MarketDataProvider
+from trader.infrastructure.performance_db import PerformanceDB
 # 技術指標層
-from v6.indicators.technical import (
+from trader.indicators.technical import (
     TechnicalAnalysis,
     DynamicThresholdManager,
     MTFConfirmation,
     MarketFilter,
 )
 # 風險管理層
-from v6.risk.manager import PrecisionHandler, RiskManager, SignalTierSystem
+from trader.risk.manager import PrecisionHandler, RiskManager, SignalTierSystem
 # 訂單執行層
-from v6.execution.order_engine import OrderExecutionEngine
-from v6.config import ConfigV6 as Config
-from v6.positions import PositionManager
-from v6.persistence import PositionPersistence
-from v6.signals import detect_2b_with_pivots
+from trader.execution.order_engine import OrderExecutionEngine
+from trader.config import ConfigV6 as Config
+from trader.positions import PositionManager
+from trader.persistence import PositionPersistence
+from trader.signals import detect_2b_with_pivots
 
 logger = logging.getLogger(__name__)
 
@@ -277,6 +278,25 @@ class TradingBotV6:
         """下市價單"""
         return self.execution_engine.create_order(symbol, side, quantity)
 
+    @staticmethod
+    def _extract_fill_price(order_result: dict, fallback_price: float) -> float:
+        """
+        從訂單回應取實際成交均價（avgPrice / average）。
+        失敗或回傳 0 時使用 fallback（信號價），確保不影響現有邏輯。
+
+        BinanceFuturesClient 路徑：result['avgPrice']（字串）
+        CCXT 路徑：result['average']（float）
+        """
+        try:
+            avg = order_result.get('avgPrice') or order_result.get('average')
+            if avg:
+                price = float(avg)
+                if price > 0:
+                    return price
+        except Exception:
+            pass
+        return fallback_price
+
     def _futures_close_position(self, symbol: str, side: str, quantity: float) -> dict:
         """平倉"""
         return self.execution_engine.close_position(symbol, side, quantity)
@@ -335,6 +355,24 @@ class TradingBotV6:
                     else:
                         del self.early_exit_cooldown[symbol]
 
+                # === Risk Guard: 同幣虧損冷卻（persistent，基於 perf_db）===
+                if Config.SYMBOL_LOSS_COOLDOWN_HOURS > 0:
+                    last_loss_exit = self.perf_db.get_last_loss_exit_time(symbol)
+                    if last_loss_exit:
+                        try:
+                            exit_dt = datetime.fromisoformat(last_loss_exit)
+                            if exit_dt.tzinfo is None:
+                                exit_dt = exit_dt.replace(tzinfo=timezone.utc)
+                            hours_since = (datetime.now(timezone.utc) - exit_dt).total_seconds() / 3600
+                            if hours_since < Config.SYMBOL_LOSS_COOLDOWN_HOURS:
+                                logger.info(
+                                    f"{symbol}: 跳過（上次虧損 {hours_since:.1f}h 前，"
+                                    f"冷卻 {Config.SYMBOL_LOSS_COOLDOWN_HOURS}h）"
+                                )
+                                continue
+                        except (ValueError, TypeError):
+                            pass  # 解析失敗不阻塞
+
                 # 總風險檢查
                 active_list = list(self.active_trades.values())
                 if not self._check_total_risk(active_list):
@@ -380,6 +418,7 @@ class TradingBotV6:
                     vol_explosive_threshold=Config.VOL_EXPLOSIVE_THRESHOLD,
                     vol_strong_threshold=Config.VOL_STRONG_THRESHOLD,
                     vol_moderate_threshold=Config.VOL_MODERATE_THRESHOLD,
+                    min_fakeout_atr=Config.MIN_FAKEOUT_ATR,
                 )
                 if has_2b and details_2b is not None:
                     details_2b['signal_type'] = '2B'
@@ -434,15 +473,56 @@ class TradingBotV6:
                     logger.info(f"{symbol}: MTF {mtf_reason}")
 
                 # 信號等級
-                signal_tier, tier_multiplier = SignalTierSystem.calculate_signal_tier(
+                signal_tier, tier_multiplier, tier_score = SignalTierSystem.calculate_signal_tier(
                     signal_details, mtf_aligned, is_strong_market,
                     signal_details.get('signal_strength', 'moderate')
                 )
                 signal_details['signal_tier'] = signal_tier
                 signal_details['market_regime'] = 'STRONG' if is_strong_market else 'TRENDING'
+                signal_details['entry_adx'] = (
+                    round(float(df_signal['adx'].iloc[-1]), 2)
+                    if 'adx' in df_signal.columns and not pd.isna(df_signal['adx'].iloc[-1])
+                    else None
+                )
                 signal_details['_market_reason'] = market_reason
                 signal_details['_trend_desc'] = trend_desc
                 signal_details['_mtf_reason'] = mtf_reason
+                # Tier diagnostic fields（數據蒐集，不影響交易邏輯）
+                signal_details['tier_score'] = tier_score
+                signal_details['mtf_aligned'] = mtf_aligned
+                signal_details['volume_grade'] = signal_details.get('signal_strength', 'moderate')
+                # trend_adx: 用 df_trend (1D) 的 ADX，而非 df_signal (1H)
+                signal_details['trend_adx'] = (
+                    round(float(df_trend['adx'].iloc[-1]), 2)
+                    if 'adx' in df_trend.columns and len(df_trend) > 0
+                    and not pd.isna(df_trend['adx'].iloc[-1])
+                    else None
+                )
+
+                # === Risk Guard: BTC Trend Filter ===
+                if Config.BTC_TREND_FILTER_ENABLED and "BTC" not in symbol:
+                    try:
+                        btc_df = self.data_provider.fetch_ohlcv("BTC/USDT", "1d", limit=60)
+                        if btc_df is not None and len(btc_df) >= 50:
+                            btc_ema20 = btc_df['close'].ewm(span=20, adjust=False).mean().iloc[-1]
+                            btc_ema50 = btc_df['close'].ewm(span=50, adjust=False).mean().iloc[-1]
+                            btc_trend = "LONG" if btc_ema20 > btc_ema50 else "SHORT"
+                            if signal_side != btc_trend:
+                                if Config.BTC_COUNTER_TREND_MULT <= 0:
+                                    logger.info(
+                                        f"{symbol}: 跳過（BTC 趨勢={btc_trend}，信號={signal_side} 逆勢，"
+                                        f"BTC_COUNTER_TREND_MULT=0）"
+                                    )
+                                    continue
+                                else:
+                                    # 降倉：乘以逆勢乘數
+                                    tier_multiplier *= Config.BTC_COUNTER_TREND_MULT
+                                    logger.info(
+                                        f"{symbol}: BTC 逆勢（BTC={btc_trend}，信號={signal_side}），"
+                                        f"倉位乘數 ×{Config.BTC_COUNTER_TREND_MULT}"
+                                    )
+                    except Exception as e:
+                        logger.warning(f"BTC trend filter failed (non-fatal): {e}")
 
                 logger.info(
                     f"準備進場: {symbol} {best_type} {signal_side} | "
@@ -559,7 +639,28 @@ class TradingBotV6:
                 if position_size <= 0:
                     return
 
+                # V5.3 equity cap：獨立上限，避免緊止損暴倉
+                v53_notional = position_size * entry_price
+                v53_cap_notional = balance * Config.V53_EQUITY_CAP_PERCENT
+                if v53_notional > v53_cap_notional:
+                    capped_size = self.precision_handler.round_amount(symbol, v53_cap_notional / entry_price)
+                    logger.info(
+                        f"{symbol}: V5.3 notional 截頂 "
+                        f"${v53_notional:.2f} -> ${v53_cap_notional:.2f} "
+                        f"(equity_cap={Config.EQUITY_CAP_PERCENT*100:.0f}%)"
+                    )
+                    position_size = capped_size
+
                 initial_r = balance * Config.RISK_PER_TRADE
+
+            # === Risk Guard: SL Distance Cap ===
+            sl_distance_pct = abs(entry_price - stop_loss) / entry_price
+            if sl_distance_pct > Config.MAX_SL_DISTANCE_PCT:
+                logger.info(
+                    f"{symbol}: 跳過（SL 距離 {sl_distance_pct:.1%} > 上限 "
+                    f"{Config.MAX_SL_DISTANCE_PCT:.0%}，entry={entry_price} sl={stop_loss}）"
+                )
+                return
 
             # === Dry run 模式 ===
             if Config.V6_DRY_RUN:
@@ -596,11 +697,19 @@ class TradingBotV6:
             # === 實際下單 ===
             order_side = 'BUY' if side == 'LONG' else 'SELL'
             if BinanceFuturesClient.is_enabled():
-                self._futures_create_order(symbol, order_side, position_size)
+                order_result = self._futures_create_order(symbol, order_side, position_size)
             else:
-                self.exchange.create_order(
+                order_result = self.exchange.create_order(
                     symbol=symbol, type='market', side=order_side.lower(), amount=position_size
                 )
+
+            # 捕捉實際成交均價（market order 可能有 slippage）
+            fill_price = self._extract_fill_price(order_result, entry_price)
+            if fill_price != entry_price:
+                logger.info(
+                    f"{symbol} 成交均價修正: 信號${entry_price:.4f} → 實際${fill_price:.4f}"
+                )
+            entry_price = fill_price
 
             logger.info(
                 f"{symbol} {side} 開倉成功: {position_size:.6f} @ ${entry_price:.2f} | "
@@ -610,7 +719,7 @@ class TradingBotV6:
                 f"MTF={signal_details.get('_mtf_reason','')}"
             )
 
-            # 建立 PositionManager（注入 Strategy）
+            # 建立 PositionManager（策略由 is_v6_pyramid 自動選擇）
             pm = PositionManager(
                 symbol=symbol,
                 side=side,
@@ -623,9 +732,28 @@ class TradingBotV6:
                 initial_r=initial_r,
                 signal_tier=signal_details.get('signal_tier', 'B'),
                 market_regime=signal_details.get('market_regime', 'UNKNOWN'),
-                strategy=Config.get_strategy(),
             )
             pm.atr = atr
+            pm.entry_adx = signal_details.get('entry_adx')
+            pm.fakeout_depth_atr = signal_details.get('fakeout_depth_atr')
+            pm.trend_adx = signal_details.get('trend_adx')
+            pm.mtf_aligned = signal_details.get('mtf_aligned')
+            pm.volume_grade = signal_details.get('volume_grade')
+            pm.tier_score = signal_details.get('tier_score')
+
+            # --- BTC Trend Alignment (data collection only) ---
+            btc_trend_aligned = None
+            if "BTC" not in symbol:  # BTC/USDT 自身不適用
+                try:
+                    btc_df = self.data_provider.fetch_ohlcv("BTC/USDT", "1d", limit=60)
+                    if btc_df is not None and len(btc_df) >= 50:
+                        btc_ema20 = btc_df['close'].ewm(span=20, adjust=False).mean().iloc[-1]
+                        btc_ema50 = btc_df['close'].ewm(span=50, adjust=False).mean().iloc[-1]
+                        btc_trend = "LONG" if btc_ema20 > btc_ema50 else "SHORT"
+                        btc_trend_aligned = (side == btc_trend)
+                except Exception as e:
+                    logger.warning(f"BTC trend check failed: {e}")
+            pm.btc_trend_aligned = btc_trend_aligned
 
             # Structured trade log
             _trade_log({
@@ -730,11 +858,11 @@ class TradingBotV6:
                     state_changed = True
 
                 elif action == "V53_REDUCE_15R":
-                    self._handle_v53_reduce(pm, Config.FIRST_PARTIAL_PCT, "1.5R")
+                    self._handle_v53_reduce(pm, Config.FIRST_PARTIAL_PCT, "1.5R", current_price)
                     state_changed = True
 
                 elif action == "V53_REDUCE_25R":
-                    self._handle_v53_reduce(pm, Config.SECOND_PARTIAL_PCT, "2.5R")
+                    self._handle_v53_reduce(pm, Config.SECOND_PARTIAL_PCT, "2.5R", current_price)
                     state_changed = True
 
                 # 記錄狀態
@@ -1073,13 +1201,15 @@ class TradingBotV6:
                 except Exception:
                     current_price = pm.avg_entry  # fallback
 
-            # 計算 PnL
+            # 計算 PnL（合計 partial closes + final close）
             if pm.side == 'LONG':
-                pnl_pct = (current_price - pm.avg_entry) / pm.avg_entry * 100 if pm.avg_entry else 0
-                pnl_usdt = pm.total_size * (current_price - pm.avg_entry)
+                final_pnl = pm.total_size * (current_price - pm.avg_entry)
             else:
-                pnl_pct = (pm.avg_entry - current_price) / pm.avg_entry * 100 if pm.avg_entry else 0
-                pnl_usdt = pm.total_size * (pm.avg_entry - current_price)
+                final_pnl = pm.total_size * (pm.avg_entry - current_price)
+
+            pnl_usdt = final_pnl + pm.realized_partial_pnl
+            original_notional = pm.original_size * pm.avg_entry
+            pnl_pct = (pnl_usdt / original_notional * 100) if original_notional > 0 else 0
 
             duration_h = (datetime.now(timezone.utc) - pm.entry_time).total_seconds() / 3600
             exit_reason = getattr(pm, 'exit_reason', None) or 'unknown'
@@ -1197,6 +1327,16 @@ class TradingBotV6:
                 "stage_reached":   pm.stage,
                 "exit_reason":     exit_reason,
                 "market_regime":   pm.market_regime,
+                "entry_adx":          getattr(pm, 'entry_adx', None),
+                "fakeout_depth_atr":  getattr(pm, 'fakeout_depth_atr', None),
+                "reverse_2b_depth_atr": getattr(pm, 'reverse_2b_depth_atr', None),
+                "original_size":       pm.original_size,
+                "partial_pnl_usdt":    pm.realized_partial_pnl,
+                "btc_trend_aligned":   getattr(pm, 'btc_trend_aligned', None),
+                "trend_adx":       getattr(pm, 'trend_adx', None),
+                "mtf_aligned":     int(pm.mtf_aligned) if getattr(pm, 'mtf_aligned', None) is not None else None,
+                "volume_grade":    getattr(pm, 'volume_grade', None),
+                "tier_score":      getattr(pm, 'tier_score', None),
             })
 
             # Telegram
@@ -1239,10 +1379,17 @@ class TradingBotV6:
 
             # 下單
             order_side = 'BUY' if pm.side == 'LONG' else 'SELL'
-            self._futures_create_order(pm.symbol, order_side, add_size)
+            order_result = self._futures_create_order(pm.symbol, order_side, add_size)
+
+            # 捕捉實際成交均價
+            fill_price = self._extract_fill_price(order_result, entry_price)
+            if fill_price != entry_price:
+                logger.info(
+                    f"{pm.symbol} Stage2 成交均價修正: 信號${entry_price:.4f} → 實際${fill_price:.4f}"
+                )
 
             # 更新 PM
-            pm.add_stage2(entry_price, add_size)
+            pm.add_stage2(fill_price, add_size)
 
             # 更新硬止損（Stage 2 移損至保本）
             self._cancel_stop_loss_order(pm.symbol, pm.stop_order_id)
@@ -1255,7 +1402,7 @@ class TradingBotV6:
                 self.persistence.backup_positions()
 
             logger.info(
-                f"{pm.symbol} 階段2 加倉完成: +{add_size:.6f} @ ${entry_price:.2f} | "
+                f"{pm.symbol} 階段2 加倉完成: +{add_size:.6f} @ ${fill_price:.2f} | "
                 f"總倉位={pm.total_size:.6f} | 止損=${pm.current_sl:.2f}（保本）"
             )
 
@@ -1265,7 +1412,7 @@ class TradingBotV6:
     def _handle_stage3(self, pm: PositionManager, current_price: float, df_1h):
         """處理 Stage 3 加倉"""
         try:
-            from v6.structure import StructureAnalysis
+            from trader.structure import StructureAnalysis
 
             entry_price = current_price
 
@@ -1313,10 +1460,17 @@ class TradingBotV6:
 
             # 下單
             order_side = 'BUY' if pm.side == 'LONG' else 'SELL'
-            self._futures_create_order(pm.symbol, order_side, add_size)
+            order_result = self._futures_create_order(pm.symbol, order_side, add_size)
+
+            # 捕捉實際成交均價
+            fill_price = self._extract_fill_price(order_result, entry_price)
+            if fill_price != entry_price:
+                logger.info(
+                    f"{pm.symbol} Stage3 成交均價修正: 信號${entry_price:.4f} → 實際${fill_price:.4f}"
+                )
 
             # 更新 PM
-            pm.add_stage3(entry_price, add_size, swing_stop)
+            pm.add_stage3(fill_price, add_size, swing_stop)
 
             # 更新硬止損
             self._cancel_stop_loss_order(pm.symbol, pm.stop_order_id)
@@ -1328,14 +1482,14 @@ class TradingBotV6:
                 self.persistence.backup_positions()
 
             logger.info(
-                f"{pm.symbol} 階段3 加倉完成: +{add_size:.6f} @ ${entry_price:.2f} | "
+                f"{pm.symbol} 階段3 加倉完成: +{add_size:.6f} @ ${fill_price:.2f} | "
                 f"總倉位={pm.total_size:.6f} | 止損=${pm.current_sl:.2f}（swing 結構）"
             )
 
         except Exception as e:
             logger.error(f"{pm.symbol} 階段3 加倉失敗: {e}")
 
-    def _handle_v53_reduce(self, pm: PositionManager, pct: int, label: str):
+    def _handle_v53_reduce(self, pm: PositionManager, pct: int, label: str, current_price: float):
         """處理 V5.3 減倉"""
         try:
             reduce_size = pm.total_size * (pct / 100.0)
@@ -1345,11 +1499,49 @@ class TradingBotV6:
             reduce_size = float(self.precision_handler.format_quantity(pm.symbol, reduce_size))
 
             if Config.V6_DRY_RUN:
-                logger.info(f"[模擬] {pm.symbol} {label} 減倉: -{reduce_size:.6f}")
+                if pm.side == 'LONG':
+                    partial_pnl = reduce_size * (current_price - pm.avg_entry)
+                else:
+                    partial_pnl = reduce_size * (pm.avg_entry - current_price)
+                pm.realized_partial_pnl += partial_pnl
+                logger.info(
+                    f"[模擬] {pm.symbol} {label} 減倉: -{reduce_size:.6f} "
+                    f"@ ${current_price:.2f} PnL=${partial_pnl:+.2f}"
+                )
                 pm.total_size -= reduce_size
+                _trade_log({
+                    'event': 'PARTIAL_CLOSE',
+                    'trade_id': pm.trade_id,
+                    'ts': datetime.now(timezone.utc).isoformat(),
+                    'bot': 'v6.0',
+                    'symbol': pm.symbol,
+                    'side': pm.side,
+                    'label': label,
+                    'reduce_size': f'{reduce_size:.6f}',
+                    'reduce_price': f'{current_price:.2f}',
+                    'partial_pnl': f'{partial_pnl:+.2f}',
+                    'cumulative_partial_pnl': f'{pm.realized_partial_pnl:+.2f}',
+                    'remaining_size': f'{pm.total_size:.6f}',
+                })
                 return
 
-            self._futures_close_position(pm.symbol, pm.side, reduce_size)
+            order_result = self._futures_close_position(pm.symbol, pm.side, reduce_size)
+
+            # 捕捉實際成交均價
+            fill_price = self._extract_fill_price(order_result, current_price)
+            if fill_price != current_price:
+                logger.info(
+                    f"{pm.symbol} {label} 減倉成交均價修正: "
+                    f"ticker${current_price:.4f} → 實際${fill_price:.4f}"
+                )
+
+            # 計算並累積減倉 PnL
+            if pm.side == 'LONG':
+                partial_pnl = reduce_size * (fill_price - pm.avg_entry)
+            else:
+                partial_pnl = reduce_size * (pm.avg_entry - fill_price)
+            pm.realized_partial_pnl += partial_pnl
+
             pm.total_size -= reduce_size
 
             # 更新硬止損（倉位變小了）
@@ -1359,9 +1551,25 @@ class TradingBotV6:
             )
 
             logger.info(
-                f"{pm.symbol} {label} 減倉: -{reduce_size:.6f} | "
+                f"{pm.symbol} {label} 減倉: -{reduce_size:.6f} @ ${fill_price:.2f} | "
+                f"PnL=${partial_pnl:+.2f} 累積=${pm.realized_partial_pnl:+.2f} | "
                 f"剩餘={pm.total_size:.6f} | 止損=${pm.current_sl:.2f}"
             )
+
+            _trade_log({
+                'event': 'PARTIAL_CLOSE',
+                'trade_id': pm.trade_id,
+                'ts': datetime.now(timezone.utc).isoformat(),
+                'bot': 'v6.0',
+                'symbol': pm.symbol,
+                'side': pm.side,
+                'label': label,
+                'reduce_size': f'{reduce_size:.6f}',
+                'reduce_price': f'{fill_price:.2f}',
+                'partial_pnl': f'{partial_pnl:+.2f}',
+                'cumulative_partial_pnl': f'{pm.realized_partial_pnl:+.2f}',
+                'remaining_size': f'{pm.total_size:.6f}',
+            })
 
         except Exception as e:
             logger.error(f"{pm.symbol} 減倉失敗: {e}")
@@ -1448,6 +1656,9 @@ class TradingBotV6:
 if __name__ == "__main__":
     import argparse
 
+    # SIGTERM → KeyboardInterrupt（systemd stop 時 graceful flush positions）
+    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+
     parser = argparse.ArgumentParser(description='Trading Bot V6.0')
     parser.add_argument('--dry-run', action='store_true', help='Dry run mode')
     parser.add_argument('--debug', action='store_true', help='Debug mode')
@@ -1472,6 +1683,20 @@ if __name__ == "__main__":
             ),
         ],
     )
+
+    # [TRADE] 日誌分流到 .log/v6_trades.log
+    class _TradeFilter(logging.Filter):
+        def filter(self, record):
+            msg = record.getMessage()
+            return isinstance(msg, str) and '[TRADE]' in msg
+
+    _trade_handler = logging.handlers.RotatingFileHandler(
+        str(log_dir / 'v6_trades.log'), maxBytes=5*1024*1024, backupCount=5, encoding='utf-8'
+    )
+    _trade_handler.setFormatter(logging.Formatter('%(message)s'))
+    _trade_handler.addFilter(_TradeFilter())
+    _trade_handler.setLevel(logging.INFO)
+    logging.getLogger().addHandler(_trade_handler)
 
     try:
         # bot_config.json 相對於專案根目錄（bot.py 的上層），不依賴 CWD

@@ -8,9 +8,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 import pandas as pd
 import pytest
 from datetime import datetime, timezone, timedelta
-from v6.persistence import PositionPersistence
-from v6.positions import PositionManager, EntryRecord
-from v6.infrastructure.performance_db import PerformanceDB
+from trader.persistence import PositionPersistence
+from trader.positions import PositionManager, EntryRecord
+from trader.infrastructure.performance_db import PerformanceDB
 
 
 TEST_PATH = 'C:/Users/user/test_v6_persist.json'
@@ -375,6 +375,15 @@ class TestPositionExitDecision:
         assert d['action'] == 'CLOSE'
         assert d['reason'] == 'FAST_STOP_067R'
 
+    def test_06b_early_stop_r_v6_still_works(self):
+        """V6 SHORT：entry=100, sl=110, price=107.5 → r=-0.75 → V6 仍觸發 FAST_STOP"""
+        pm = _make_pm_v6(side='SHORT', entry=100, sl=110, size=1.0,
+                         stage=1, hours_ago=1)
+        df_1h = _make_df_1h_flat(n=20, close=107.5)
+        d = pm._get_exit_decision(107.5, df_1h)
+        assert d['action'] == 'CLOSE'
+        assert d['reason'] == 'FAST_STOP_067R'
+
     def test_07_time_exit_v6(self):
         """V6 Stage 1 持倉 37h（>V6_STAGE1_MAX_HOURS=36h）且未升至 Stage 2 → TIME_EXIT"""
         pm = _make_pm_v6(side='LONG', entry=100, sl=95, stage=1,
@@ -427,13 +436,13 @@ class TestPositionExitDecision:
         assert d['action'] == 'STAGE3_TRIGGER'
         assert d['reason'] == 'EMA_PULLBACK'
 
-    def test_11_fast_stop_067r_v53(self):
-        """V5.3 LONG：共同路徑 early stop, price=92.5 → r=-0.75 ≤ -EARLY_STOP_R_THRESHOLD(0.75) → FAST_STOP_067R"""
+    def test_11_v53_skips_early_stop_r(self):
+        """V5.3 不走 early_stop_r — price=92.5 已達 -0.75R 但 V53 應繼續持倉（由 SL/structure_break 處理）"""
         pm = _make_pm_v53(side='LONG', entry=100, sl=90, hours_ago=1)
         df_1h = _make_df_1h_flat(n=20, close=92.5)
         d = pm._get_exit_decision(92.5, df_1h)
-        assert d['action'] == 'CLOSE'
-        assert d['reason'] == 'FAST_STOP_067R'
+        # V53 不應觸發 early_stop_r，應繼續走 V53 策略邏輯
+        assert d['action'] != 'CLOSE' or d['reason'] != 'FAST_STOP_067R'
 
     def test_12_time_exit_v53(self):
         """V5.3 持倉 25h 且 is_first_partial=False → TIME_EXIT"""
@@ -565,7 +574,7 @@ class TestProfitPullbackMFEThreshold:
 
     def test_strategy_dispatch_v53_no_pullback(self):
         """non-V6 trade should use V53SopStrategy (no profit_pullback)"""
-        from v6.strategies.v53_sop import V53SopStrategy
+        from trader.strategies.v53_sop import V53SopStrategy
         pm = PositionManager(
             symbol='TEST/USDT', side='LONG',
             entry_price=100.0, stop_loss=98.0,

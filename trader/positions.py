@@ -14,7 +14,7 @@ from dataclasses import dataclass, field, asdict
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from v6.strategies import TradingStrategy
+    from trader.strategies import TradingStrategy
 
 
 @dataclass
@@ -105,6 +105,10 @@ class PositionManager:
         self.fakeout_depth_atr: Optional[float] = None
         self.btc_trend_aligned: Optional[bool] = None
         self.reverse_2b_depth_atr: Optional[float] = None
+        self.trend_adx: Optional[float] = None
+        self.mtf_aligned: Optional[bool] = None
+        self.volume_grade: Optional[str] = None
+        self.tier_score: Optional[int] = None
 
         # === 退出原因標記（runtime 暫態，不持久化）===
         self.exit_reason: Optional[str] = None  # Public for Strategy
@@ -120,7 +124,7 @@ class PositionManager:
         self.risk_dist = abs(entry_price - stop_loss)
 
         # === 策略（Strategy Pattern V7 P2）===
-        from v6.strategies import StrategyFactory
+        from trader.strategies import StrategyFactory
         self.strategy = strategy or StrategyFactory.create_strategy(
             "v6" if self.is_v6_pyramid else "v53"
         )
@@ -235,7 +239,7 @@ class PositionManager:
         Returns:
             bool: 是否觸發
         """
-        from v6.config import ConfigV6 as Cfg
+        from trader.config import ConfigV6 as Cfg
 
         prefix = f"[V6] {self.symbol} Stage2Check"
         log_fn = logger.info if Cfg.V6_STAGE2_DEBUG_LOG else logger.debug
@@ -326,7 +330,7 @@ class PositionManager:
         if df_1h is None or len(df_1h) < 3:
             return False
 
-        from v6.config import ConfigV6 as Cfg
+        from trader.config import ConfigV6 as Cfg
 
         current = df_1h.iloc[-1]
         prev = df_1h.iloc[-2]
@@ -393,7 +397,7 @@ class PositionManager:
         Returns:
             float: 加倉數量（0 = 不加倉）
         """
-        from v6.config import ConfigV6 as Cfg
+        from trader.config import ConfigV6 as Cfg
 
         if self.initial_r <= 0:
             logger.warning(f"[{self.symbol}] initial_r={self.initial_r}, skipping stage2 sizing")
@@ -447,7 +451,7 @@ class PositionManager:
         Returns:
             float: 加倉數量（0 = 不加倉）
         """
-        from v6.config import ConfigV6 as Cfg
+        from trader.config import ConfigV6 as Cfg
 
         if self.initial_r <= 0:
             logger.warning(f"[{self.symbol}] initial_r={self.initial_r}, skipping stage3 sizing")
@@ -561,6 +565,10 @@ class PositionManager:
             'fakeout_depth_atr':   getattr(self, 'fakeout_depth_atr', None),
             'btc_trend_aligned':   getattr(self, 'btc_trend_aligned', None),
             'reverse_2b_depth_atr': getattr(self, 'reverse_2b_depth_atr', None),
+            'trend_adx':       getattr(self, 'trend_adx', None),
+            'mtf_aligned':     getattr(self, 'mtf_aligned', None),
+            'volume_grade':    getattr(self, 'volume_grade', None),
+            'tier_score':      getattr(self, 'tier_score', None),
             'pending_stop_cancels': self.pending_stop_cancels,
             'original_size': self.original_size,
             'realized_partial_pnl': self.realized_partial_pnl,
@@ -641,9 +649,13 @@ class PositionManager:
         pm.fakeout_depth_atr = data.get('fakeout_depth_atr')
         pm.btc_trend_aligned = data.get('btc_trend_aligned')
         pm.reverse_2b_depth_atr = data.get('reverse_2b_depth_atr')
+        pm.trend_adx = data.get('trend_adx')
+        pm.mtf_aligned = data.get('mtf_aligned')
+        pm.volume_grade = data.get('volume_grade')
+        pm.tier_score = data.get('tier_score')
 
         # 恢復策略（Strategy Pattern V7 P2）
-        from v6.strategies import StrategyFactory
+        from trader.strategies import StrategyFactory
         strategy_type = data.get('strategy_type', 'v6' if pm.is_v6_pyramid else 'v53')
         pm.strategy = StrategyFactory.create_strategy(strategy_type)
 

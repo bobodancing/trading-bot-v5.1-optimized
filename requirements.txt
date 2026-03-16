@@ -1,4 +1,4 @@
-# Trading Bot v5.2 依賴套件
+# Trading Bot V6.0 依賴套件
 # pip install -r requirements.txt
 
 # 核心交易

@@ -13,9 +13,18 @@ Crypto Market Scanner v1.0
 整合建議來源：Claude + Gemini
 """
 
+import sys
+from pathlib import Path
+
+# Add parent directory to path for v6 imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 import ccxt
 import pandas as pd
-import pandas_ta as ta
+try:
+    import pandas_ta as ta
+except ImportError:
+    ta = None
 import numpy as np
 import json
 import sqlite3
@@ -28,6 +37,10 @@ from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass, asdict
 from enum import Enum
+
+# Import shared StructureAnalysis from v6
+from trader.structure import StructureAnalysis
+from trader.infrastructure.data_provider import MarketDataProvider
 
 # 標記模組可用
 SCANNER_AVAILABLE = True
@@ -46,6 +59,7 @@ class ScannerConfig:
     
     # Layer 1: 流動性過濾
     L1_MIN_VOLUME_USD = 50_000_000  # 24H 最低成交量
+    L1_MIN_DAILY_CANDLES = 200      # 最少日K數量（Bot 需要 EMA200）
     L1_EXCLUDED_SYMBOLS = ['USDC/USDT', 'BUSD/USDT', 'TUSD/USDT', 'DAI/USDT', 'FDUSD/USDT']
     L1_EXCLUDED_PATTERNS = ['UP/USDT', 'DOWN/USDT', 'BEAR/', 'BULL/', '3L/', '3S/']
     
@@ -68,10 +82,11 @@ class ScannerConfig:
     L4_MAX_PER_SECTOR = 2
     L4_CORRELATION_PERIOD = 30  # 計算相關性的天數
     
-    # 輸出設置
+    # 輸出設置（專案根目錄）
+    _PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
     OUTPUT_TOP_N = 10
-    OUTPUT_JSON_PATH = 'hot_symbols.json'
-    OUTPUT_DB_PATH = 'scanner_results.db'
+    OUTPUT_JSON_PATH = str(Path(__file__).resolve().parent.parent / 'hot_symbols.json')
+    OUTPUT_DB_PATH = str(Path(__file__).resolve().parent.parent / 'scanner_results.db')
     
     # API 優化
     API_BATCH_SIZE = 50
@@ -89,7 +104,7 @@ class ScannerConfig:
     TIMEFRAME_DAILY = '1d'     # 日線確認
     
     @classmethod
-    def load_from_json(cls, config_file: str = None):
+    def load_from_json(cls, config_file: str = None): # type: ignore
         """從 JSON 載入配置"""
         if config_file is None:
             # 嘗試多個路徑
@@ -123,6 +138,13 @@ class ScannerConfig:
 
             cls._config_loaded = True
 
+            # 相對路徑 → 轉為專案根目錄下的絕對路徑
+            project_root = Path(__file__).resolve().parent.parent
+            for attr in ('OUTPUT_JSON_PATH', 'OUTPUT_DB_PATH'):
+                val = getattr(cls, attr, '')
+                if val and not os.path.isabs(val):
+                    setattr(cls, attr, str(project_root / val))
+
             # 強制提醒 Scanner 使用的網路
             network = "測試網" if cls.SANDBOX_MODE else "正式網"
             logger.info(f"✅ 從 {config_file} 載入配置")
@@ -133,15 +155,27 @@ class ScannerConfig:
 
 
 # ==================== 日誌設置 ====================
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    handlers=[
-        RotatingFileHandler('scanner.log', maxBytes=5*1024*1024, backupCount=2, encoding='utf-8'),
-        logging.StreamHandler()
-    ]
-)
+_project_root = Path(__file__).resolve().parent.parent
+
 logger = logging.getLogger(__name__)
+if not logger.handlers:
+    logger.setLevel(logging.INFO)
+    _fmt = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
+    _log_dir = _project_root / '.log'
+    _log_dir.mkdir(exist_ok=True)
+    _fh = RotatingFileHandler(str(_log_dir / 'scanner.log'), maxBytes=5*1024*1024, backupCount=2, encoding='utf-8')
+    _fh.setFormatter(_fmt)
+    try:
+        _stdout_utf8 = open(sys.stdout.fileno(), mode='w', encoding='utf-8', closefd=False)
+    except OSError:
+        _stdout_utf8 = sys.stdout
+        if hasattr(_stdout_utf8, 'reconfigure'):
+            _stdout_utf8.reconfigure(encoding='utf-8', errors='replace')
+    _sh = logging.StreamHandler(_stdout_utf8)
+    _sh.setFormatter(_fmt)
+    logger.addHandler(_fh)
+    logger.addHandler(_sh)
+    logger.propagate = False
 
 
 # ==================== 數據結構 ====================
@@ -247,73 +281,31 @@ def get_sector(symbol: str) -> str:
 
 
 # ==================== 結構分析 ====================
-class StructureAnalysis:
-    """結構分析工具"""
-    
-    @staticmethod
-    def find_swing_points(df: pd.DataFrame, left_bars: int = 5, right_bars: int = 2) -> Dict:
-        """找出 Swing High/Low"""
-        if len(df) < left_bars + right_bars + 1:
-            return {'swing_lows': [], 'swing_highs': [], 
-                    'last_swing_low': None, 'last_swing_high': None}
-        
-        swing_lows = []
-        swing_highs = []
-        
-        for i in range(left_bars, len(df) - right_bars):
-            current_low = df['low'].iloc[i]
-            current_high = df['high'].iloc[i]
-            
-            # Swing Low
-            is_swing_low = True
-            for j in range(1, left_bars + 1):
-                if df['low'].iloc[i - j] <= current_low:
-                    is_swing_low = False
-                    break
-            if is_swing_low:
-                for j in range(1, right_bars + 1):
-                    if df['low'].iloc[i + j] <= current_low:
-                        is_swing_low = False
-                        break
-            if is_swing_low:
-                swing_lows.append((i, current_low))
-            
-            # Swing High
-            is_swing_high = True
-            for j in range(1, left_bars + 1):
-                if df['high'].iloc[i - j] >= current_high:
-                    is_swing_high = False
-                    break
-            if is_swing_high:
-                for j in range(1, right_bars + 1):
-                    if df['high'].iloc[i + j] >= current_high:
-                        is_swing_high = False
-                        break
-            if is_swing_high:
-                swing_highs.append((i, current_high))
-        
-        return {
-            'swing_lows': swing_lows,
-            'swing_highs': swing_highs,
-            'last_swing_low': swing_lows[-1][1] if swing_lows else None,
-            'last_swing_high': swing_highs[-1][1] if swing_highs else None,
-            'second_last_swing_low': swing_lows[-2][1] if len(swing_lows) >= 2 else None,
-            'second_last_swing_high': swing_highs[-2][1] if len(swing_highs) >= 2 else None,
-        }
+# Note: StructureAnalysis is now imported from trader.structure (shared module)
+# The class was previously defined here (lines 250-302) but has been extracted
+# to v6/structure.py for reuse between scanner and V6.0 engine.
 
 
 # ==================== 核心掃描器 ====================
 class MarketScanner:
     """市場掃描器主類"""
     
-    def __init__(self):
+    def __init__(self, data_provider: MarketDataProvider = None):
         # 確保配置已載入（防止 GUI 直接建構時未調用 load_from_json）
         ScannerConfig.load_from_json()
         self.exchange = self._init_exchange()
+        # 依賴注入：若未傳入 data_provider 則自動建立（Scanner 永遠使用正式網，sandbox=False）
+        self._data_provider = data_provider or MarketDataProvider(
+            self.exchange,
+            max_retry=ScannerConfig.API_MAX_RETRIES,
+            retry_delay=ScannerConfig.API_DELAY_BETWEEN_BATCHES,
+            sandbox_mode=False,
+            trading_mode=ScannerConfig.MARKET_TYPE,
+        )
         self.results: List[ScanResult] = []
         self.excluded: List[Dict] = []
-        self.btc_data: pd.DataFrame = None
-        self.market_summary: MarketSummary = None
+        self.btc_data: pd.DataFrame = None # type: ignore
+        self.market_summary: MarketSummary = None # type: ignore
 
     @staticmethod
     def _normalize_symbol(symbol: str) -> str:
@@ -357,41 +349,60 @@ class MarketScanner:
             raise
     
     def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 100) -> pd.DataFrame:
-        """獲取 K 線數據"""
-        for attempt in range(ScannerConfig.API_MAX_RETRIES):
-            try:
-                ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-                df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-                return df
-            except Exception as e:
-                if attempt < ScannerConfig.API_MAX_RETRIES - 1:
-                    time.sleep(ScannerConfig.API_DELAY_BETWEEN_BATCHES)
-                else:
-                    logger.debug(f"獲取 {symbol} 數據失敗: {e}")
-                    return pd.DataFrame()
-        return pd.DataFrame()
+        """獲取 K 線數據（委託 MarketDataProvider 統一處理重試邏輯）"""
+        return self._data_provider.fetch_ohlcv(symbol, timeframe, limit)
     
+    # TECH_DEBT: 此函數與 trading_bot_main.py 的 TechnicalAnalysis.calculate_indicators 有重疊邏輯
+    # （EMA、ATR、ADX、vol_ma），但計算的指標集不同，暫不合併。
+    # 若未來需修改共用指標，請兩邊同步更新。
     def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """計算技術指標"""
         if df.empty or len(df) < 50:
             return df
         
-        # 基礎指標
-        df['ema_20'] = ta.ema(df['close'], length=20)
-        df['ema_50'] = ta.ema(df['close'], length=50)
-        df['ema_200'] = ta.ema(df['close'], length=200)
-        df['rsi'] = ta.rsi(df['close'], length=14)
-        df['atr'] = ta.atr(df['high'], df['low'], df['close'], length=14)
-        df['vol_ma'] = ta.sma(df['volume'], length=20)
-        
-        # ADX
-        adx_data = ta.adx(df['high'], df['low'], df['close'], length=14)
-        if adx_data is not None and not adx_data.empty:
-            if isinstance(adx_data, pd.DataFrame):
-                adx_cols = [col for col in adx_data.columns if col.startswith('ADX')]
-                if adx_cols:
-                    df['adx'] = adx_data[adx_cols[0]]
+        if ta is not None:
+            # 使用 pandas_ta
+            df['ema_20'] = ta.ema(df['close'], length=20)
+            df['ema_50'] = ta.ema(df['close'], length=50)
+            df['ema_200'] = ta.ema(df['close'], length=200)
+            df['rsi'] = ta.rsi(df['close'], length=14)
+            df['atr'] = ta.atr(df['high'], df['low'], df['close'], length=14)
+            df['vol_ma'] = ta.sma(df['volume'], length=20)
+            adx_data = ta.adx(df['high'], df['low'], df['close'], length=14)
+            if adx_data is not None and not adx_data.empty:
+                if isinstance(adx_data, pd.DataFrame):
+                    adx_cols = [col for col in adx_data.columns if col.startswith('ADX')]
+                    if adx_cols:
+                        df['adx'] = adx_data[adx_cols[0]]
+        else:
+            # 純 pandas 備用計算
+            df['ema_20'] = df['close'].ewm(span=20, adjust=False).mean()
+            df['ema_50'] = df['close'].ewm(span=50, adjust=False).mean()
+            df['ema_200'] = df['close'].ewm(span=200, adjust=False).mean()
+            df['vol_ma'] = df['volume'].rolling(window=20).mean()
+            # RSI
+            delta = df['close'].diff()
+            gain = delta.where(delta > 0, 0.0).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0.0)).rolling(window=14).mean()
+            rs = gain / loss.replace(0, np.nan)
+            df['rsi'] = 100 - (100 / (1 + rs))
+            # ATR
+            tr = pd.concat([
+                df['high'] - df['low'],
+                (df['high'] - df['close'].shift()).abs(),
+                (df['low'] - df['close'].shift()).abs()
+            ], axis=1).max(axis=1)
+            df['atr'] = tr.rolling(window=14).mean()
+            # ADX
+            plus_dm = df['high'].diff()
+            minus_dm = -df['low'].diff()
+            plus_dm = plus_dm.where((plus_dm > minus_dm) & (plus_dm > 0), 0.0)
+            minus_dm = minus_dm.where((minus_dm > plus_dm) & (minus_dm > 0), 0.0)
+            atr14 = tr.rolling(window=14).mean()
+            plus_di = 100 * (plus_dm.rolling(window=14).mean() / atr14.replace(0, np.nan))
+            minus_di = 100 * (minus_dm.rolling(window=14).mean() / atr14.replace(0, np.nan))
+            dx = (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan) * 100
+            df['adx'] = dx.rolling(window=14).mean()
         
         # ATR 百分比
         df['atr_percent'] = (df['atr'] / df['close']) * 100
@@ -448,7 +459,33 @@ class MarketScanner:
 
                 passed.append(base_symbol)
 
-            logger.info(f"✅ Layer 1 通過: {len(passed)} / {usdt_count} 個 USDT 標的 (總 tickers: {len(tickers)})")
+            logger.info(f"📊 Layer 1 流動性通過: {len(passed)} / {usdt_count} 個 USDT 標的")
+
+            # 歷史深度過濾：排除日K不足的新幣
+            min_candles = ScannerConfig.L1_MIN_DAILY_CANDLES
+            if min_candles > 0 and passed:
+                logger.debug(f"   檢查日K歷史深度（需要 >= {min_candles} 根）...")
+                history_passed = []
+                for i, symbol in enumerate(passed):
+                    try:
+                        df_daily = self.fetch_ohlcv(symbol, '1d', limit=min_candles)
+                        if not df_daily.empty and len(df_daily) >= min_candles:
+                            history_passed.append(symbol)
+                        else:
+                            candle_count = len(df_daily) if not df_daily.empty else 0
+                            logger.debug(f"   {symbol}: 日K不足 ({candle_count}/{min_candles})，排除")
+                    except Exception:
+                        logger.debug(f"   {symbol}: 日K獲取失敗，排除")
+                    # 每 20 個 symbol 暫停一下避免 rate limit
+                    if (i + 1) % 20 == 0:
+                        time.sleep(ScannerConfig.API_DELAY_BETWEEN_BATCHES)
+
+                removed = len(passed) - len(history_passed)
+                if removed > 0:
+                    logger.debug(f"   排除 {removed} 個日K不足的新幣")
+                passed = history_passed
+
+            logger.info(f"✅ Layer 1 最終通過: {len(passed)} 個標的")
             if passed:
                 logger.info(f"   前5: {passed[:5]}")
             return passed
@@ -474,7 +511,7 @@ class MarketScanner:
         
         for i in range(0, total, ScannerConfig.API_BATCH_SIZE):
             batch = symbols[i:i + ScannerConfig.API_BATCH_SIZE]
-            logger.info(f"   處理批次 {i//ScannerConfig.API_BATCH_SIZE + 1}/{(total-1)//ScannerConfig.API_BATCH_SIZE + 1}")
+            logger.debug(f"   處理批次 {i//ScannerConfig.API_BATCH_SIZE + 1}/{(total-1)//ScannerConfig.API_BATCH_SIZE + 1}")
             
             for symbol in batch:
                 try:
@@ -583,6 +620,72 @@ class MarketScanner:
         
         return results
     
+    @staticmethod
+    def _check_confirmed_2b(
+        current: pd.Series, swing_point: float, opposite_swing: float,
+        atr: float, is_long: bool
+    ) -> Optional[Dict]:
+        """
+        檢查已確認的 2B 反轉信號。
+        is_long=True: 檢查 Bullish 2B（跌破前低後收回）
+        is_long=False: 檢查 Bearish 2B（突破前高後收回）
+
+        回傳信號詳情 dict 或 None。
+        """
+        if is_long:
+            broke = current['low'] < swing_point
+            closed_back = current['close'] > swing_point
+            penetration = swing_point - current['low']
+        else:
+            broke = current['high'] > swing_point
+            closed_back = current['close'] < swing_point
+            penetration = current['high'] - swing_point
+
+        reasonable_depth = 0 < penetration < (atr * ScannerConfig.L3_MAX_PENETRATION_ATR)
+
+        if broke and closed_back and reasonable_depth:
+            side = SignalSide.LONG if is_long else SignalSide.SHORT
+            sl_offset = atr * 0.5
+            stop_loss = (swing_point - sl_offset) if is_long else (swing_point + sl_offset)
+            direction_str = "跌破前低" if is_long else "突破前高"
+            return {
+                'signal_type': SignalType.CONFIRMED_2B,
+                'signal_side': side,
+                'stop_loss': stop_loss,
+                'target': opposite_swing,
+                'notes': f"{direction_str} ${swing_point:.2f} 後收回，深度 {penetration/atr:.1f} ATR",
+            }
+        return None
+
+    @staticmethod
+    def _check_pre_2b(
+        current: pd.Series, swing_point: float, opposite_swing: float,
+        atr: float, is_long: bool
+    ) -> Optional[Dict]:
+        """
+        檢查預警信號（價格接近但尚未突破 swing point）。
+        回傳信號詳情 dict 或 None。
+        """
+        if is_long:
+            distance = current['close'] - swing_point
+        else:
+            distance = swing_point - current['close']
+
+        if 0 < distance < (atr * ScannerConfig.L3_PRE_2B_THRESHOLD):
+            side = SignalSide.LONG if is_long else SignalSide.SHORT
+            sl_offset = atr * 0.5
+            stop_loss = (swing_point - sl_offset) if is_long else (swing_point + sl_offset)
+            direction_str = "前低" if is_long else "前高"
+            return {
+                'signal_type': SignalType.PRE_2B,
+                'signal_side': side,
+                'stop_loss': stop_loss,
+                'target': opposite_swing,
+                'is_pre_signal': True,
+                'notes': f"距離{direction_str} ${swing_point:.2f} 僅 {distance/atr:.1f} ATR",
+            }
+        return None
+
     def _detect_2b_signal(self, df: pd.DataFrame, symbol: str, indicators: Dict) -> Optional[ScanResult]:
         """檢測 2B 信號"""
         if len(df) < 30:
@@ -607,66 +710,34 @@ class MarketScanner:
         if swing_high is None:
             swing_high = df['high'].iloc[-21:-1].max()
         
-        signal_type = SignalType.NONE
-        signal_side = SignalSide.NEUTRAL
         structure_quality = StructureQuality.SIMPLE
-        is_pre_signal = False
         entry_price = current['close']
-        stop_loss = 0
-        target = 0
-        notes = ""
-        
+
         if structure['last_swing_low'] is not None or structure['last_swing_high'] is not None:
             structure_quality = StructureQuality.SWING
-        
-        # Bullish 2B
-        broke_low = current['low'] < swing_low
-        closed_above_low = current['close'] > swing_low
-        penetration = swing_low - current['low']
-        reasonable_depth = 0 < penetration < (atr * ScannerConfig.L3_MAX_PENETRATION_ATR)
-        
-        if broke_low and closed_above_low and reasonable_depth:
-            signal_type = SignalType.CONFIRMED_2B
-            signal_side = SignalSide.LONG
-            stop_loss = swing_low - (atr * 0.5)
-            target = swing_high
-            notes = f"跌破前低 ${swing_low:.2f} 後收回，深度 {penetration/atr:.1f} ATR"
-        
-        # Bearish 2B
-        broke_high = current['high'] > swing_high
-        closed_below_high = current['close'] < swing_high
-        penetration_up = current['high'] - swing_high
-        reasonable_height = 0 < penetration_up < (atr * ScannerConfig.L3_MAX_PENETRATION_ATR)
-        
-        if broke_high and closed_below_high and reasonable_height:
-            signal_type = SignalType.CONFIRMED_2B
-            signal_side = SignalSide.SHORT
-            stop_loss = swing_high + (atr * 0.5)
-            target = swing_low
-            notes = f"突破前高 ${swing_high:.2f} 後收回，深度 {penetration_up/atr:.1f} ATR"
-        
-        # Pre-2B
-        if signal_type == SignalType.NONE:
-            distance_to_low = current['close'] - swing_low
-            if 0 < distance_to_low < (atr * ScannerConfig.L3_PRE_2B_THRESHOLD):
-                signal_type = SignalType.PRE_2B
-                signal_side = SignalSide.LONG
-                is_pre_signal = True
-                stop_loss = swing_low - (atr * 0.5)
-                target = swing_high
-                notes = f"距離前低 ${swing_low:.2f} 僅 {distance_to_low/atr:.1f} ATR"
-            
-            distance_to_high = swing_high - current['close']
-            if 0 < distance_to_high < (atr * ScannerConfig.L3_PRE_2B_THRESHOLD):
-                signal_type = SignalType.PRE_2B
-                signal_side = SignalSide.SHORT
-                is_pre_signal = True
-                stop_loss = swing_high + (atr * 0.5)
-                target = swing_low
-                notes = f"距離前高 ${swing_high:.2f} 僅 {distance_to_high/atr:.1f} ATR"
-        
-        if signal_type == SignalType.NONE:
+
+        # Confirmed 2B（Bearish 優先，與原代碼覆蓋順序一致）
+        result = (
+            self._check_confirmed_2b(current, swing_high, swing_low, atr, is_long=False)
+            or self._check_confirmed_2b(current, swing_low, swing_high, atr, is_long=True)
+        )
+
+        # Pre-2B（只在沒有確認信號時檢查，Bearish 優先）
+        if result is None:
+            result = (
+                self._check_pre_2b(current, swing_high, swing_low, atr, is_long=False)
+                or self._check_pre_2b(current, swing_low, swing_high, atr, is_long=True)
+            )
+
+        if result is None:
             return None
+
+        signal_type = result['signal_type']
+        signal_side = result['signal_side']
+        is_pre_signal = result.get('is_pre_signal', False)
+        stop_loss = result['stop_loss']
+        target = result['target']
+        notes = result['notes']
         
         # 量能分級
         vol_ratio = current['volume'] / current['vol_ma'] if current['vol_ma'] > 0 else 0
@@ -929,7 +1000,7 @@ class MarketScanner:
             bullish_count=bullish,
             bearish_count=bearish,
             pre_signal_count=pre_signals,
-            avg_adx=round(avg_adx, 1),
+            avg_adx=round(avg_adx, 1), # type: ignore
             dominant_trend=dominant,
             market_regime=regime,
             btc_trend=btc_trend
@@ -1037,37 +1108,35 @@ class MarketScanner:
         logger.info(f"💾 已輸出: {ScannerConfig.OUTPUT_DB_PATH}")
     
     def _print_summary(self):
-        """終端輸出摘要"""
-        print("\n" + "="*70)
-        print("📊 市場掃描結果")
-        print("="*70)
-        print(f"掃描時間: {self.market_summary.scan_time}")
-        print(f"市場狀態: {self.market_summary.market_regime}")
-        print(f"BTC 趨勢: {self.market_summary.btc_trend}")
-        print(f"多空比例: {self.market_summary.bullish_count} 多 / {self.market_summary.bearish_count} 空")
-        print(f"平均 ADX: {self.market_summary.avg_adx}")
-        print("-"*70)
-        
+        """終端輸出摘要（用 logger 避免 Windows cp950 encoding 問題）"""
+        logger.info("=" * 70)
+        logger.info("Market Scan Results")
+        logger.info("=" * 70)
+        logger.info(f"Scan time: {self.market_summary.scan_time}")
+        logger.info(f"Market regime: {self.market_summary.market_regime}")
+        logger.info(f"BTC trend: {self.market_summary.btc_trend}")
+        logger.info(f"Bull/Bear: {self.market_summary.bullish_count} / {self.market_summary.bearish_count}")
+        logger.info(f"Avg ADX: {self.market_summary.avg_adx}")
+        logger.info("-" * 70)
+
         confirmed = [r for r in self.results if r.signal_type == SignalType.CONFIRMED_2B.value]
         pre_signals = [r for r in self.results if r.signal_type == SignalType.PRE_2B.value]
-        
+
         if confirmed:
-            print(f"\n🎯 確認信號 ({len(confirmed)} 個):")
+            logger.info(f"Confirmed signals ({len(confirmed)}):")
             for r in confirmed[:5]:
-                emoji = "🟢" if r.signal_side == "LONG" else "🔴"
-                print(f"  {r.rank}. {emoji} {r.symbol} ({r.signal_side}) ⭐{r.score}分")
-                print(f"     入場: ${r.entry_price:.4f} | 止損: ${r.stop_loss:.4f} | 目標: ${r.target:.4f}")
-                print(f"     R/R: {r.risk_reward:.1f} | ADX: {r.adx:.1f} | 量能: {r.volume_grade}")
-                print(f"     {r.notes}")
-        
+                side_tag = "LONG" if r.signal_side == "LONG" else "SHORT"
+                logger.info(f"  #{r.rank} {r.symbol} ({side_tag}) score={r.score}")
+                logger.info(f"     entry=${r.entry_price:.4f} SL=${r.stop_loss:.4f} TP=${r.target:.4f}")
+                logger.info(f"     R/R={r.risk_reward:.1f} ADX={r.adx:.1f} vol={r.volume_grade}")
+
         if pre_signals:
-            print(f"\n⏳ 預警信號 ({len(pre_signals)} 個):")
+            logger.info(f"Pre-signals ({len(pre_signals)}):")
             for r in pre_signals[:3]:
-                emoji = "🟡" if r.signal_side == "LONG" else "🟠"
-                print(f"  {r.rank}. {emoji} {r.symbol} ({r.signal_side}) ⭐{r.score}分 [預警]")
-                print(f"     {r.notes}")
-        
-        print("\n" + "="*70)
+                side_tag = "LONG" if r.signal_side == "LONG" else "SHORT"
+                logger.info(f"  #{r.rank} {r.symbol} ({side_tag}) score={r.score} [PRE]")
+
+        logger.info("=" * 70)
     
     def _send_telegram(self):
         """發送 Telegram 通知"""
