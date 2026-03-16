@@ -120,7 +120,8 @@ class TestStage2TriggerDiagnosis:
         with patch('trader.strategies.base._apply_common_pre', return_value=None):
             decision = strategy.get_decision(pm, 106.0, df)
 
-        assert decision['action'] == 'STAGE2_TRIGGER'
+        assert decision['action'] == 'ADD'
+        assert decision['add_stage'] == 2
 
     def test_stage2_not_triggered_when_volume_insufficient(self):
         """放量不足時 Stage 2 不觸發"""
@@ -135,7 +136,7 @@ class TestStage2TriggerDiagnosis:
         with patch('trader.strategies.base._apply_common_pre', return_value=None):
             decision = strategy.get_decision(pm, 106.0, df)
 
-        assert decision['action'] != 'STAGE2_TRIGGER'
+        assert decision['action'] != 'ADD'
 
     def test_profit_pullback_blocks_stage2_when_mfe_high(self):
         """驗證：MFE 夠高時 profit_pullback 先於 Stage 2 trigger 觸發的情境"""
@@ -153,4 +154,5 @@ class TestStage2TriggerDiagnosis:
             decision = strategy.get_decision(pm, current_price, df)
 
         # 45% pullback < 55% threshold → profit_pullback 不觸發 → Stage 2 應觸發
-        assert decision['action'] == 'STAGE2_TRIGGER'
+        assert decision['action'] == 'ADD'
+        assert decision['add_stage'] == 2

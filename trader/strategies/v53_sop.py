@@ -4,10 +4,12 @@ V7 P2: V5.3 SOP 策略實作
 邏輯完整搬移自 positions.py _get_exit_decision() V5.3 路徑：
 - 結構破壞（冷卻 3 cycle）
 - 時間退出（TIME_EXIT）
-- 2.5R 減倉（V53_REDUCE_25R）
-- 1.5R 減倉（V53_REDUCE_15R）
+- 2.5R 減倉（PARTIAL_CLOSE close_pct）
+- 1.5R 減倉（PARTIAL_CLOSE close_pct）
 - 1.0R 移損（V53_1R_PROTECT）
 - ATR trailing
+
+V53 內部狀態（is_1r_protected 等）獨立於 PositionManager，透過 get_state/load_state 持久化。
 """
 
 from __future__ import annotations
@@ -20,13 +22,33 @@ if TYPE_CHECKING:
     import pandas as pd
     from trader.positions import PositionManager
 
-from trader.strategies.base import TradingStrategy, DecisionDict, _apply_common_pre
+from trader.strategies.base import Action, TradingStrategy, DecisionDict, _apply_common_pre
 
 logger = logging.getLogger(__name__)
 
 
 class V53SopStrategy(TradingStrategy):
-    """V5.3 統一出場 SOP 策略（EMA Pullback / Volume Breakout 信號用）"""
+    """V5.3 統一出場 SOP 策略"""
+
+    def __init__(self):
+        self.is_1r_protected = False
+        self.is_first_partial = False
+        self.is_second_partial = False
+        self.is_trailing_active = False
+
+    def get_state(self) -> dict:
+        return {
+            'is_1r_protected': self.is_1r_protected,
+            'is_first_partial': self.is_first_partial,
+            'is_second_partial': self.is_second_partial,
+            'is_trailing_active': self.is_trailing_active,
+        }
+
+    def load_state(self, state: dict):
+        self.is_1r_protected = state.get('is_1r_protected', False)
+        self.is_first_partial = state.get('is_first_partial', False)
+        self.is_second_partial = state.get('is_second_partial', False)
+        self.is_trailing_active = state.get('is_trailing_active', False)
 
     def get_decision(
         self,
@@ -46,16 +68,17 @@ class V53SopStrategy(TradingStrategy):
         5. 1.5R 減倉
         6. 1.0R 移損
         7. ATR trailing 移損
-        8. ACTIVE（持倉中）
+        8. HOLD（持倉中）
         """
         from trader.config import ConfigV6 as Cfg
         from trader.structure import StructureAnalysis
 
         result: DecisionDict = {
-            "action": "ACTIVE",
+            "action": Action.HOLD,
             "reason": "NONE",
             "new_sl": None,
             "close_pct": None,
+            "add_stage": None,
         }
 
         # === 共同前處理（SL / Early Stop）===
@@ -72,12 +95,12 @@ class V53SopStrategy(TradingStrategy):
                 threshold = swings['last_swing_low'] * 0.995
                 if close_prev < threshold and close_curr < threshold:
                     pm.exit_reason = 'v53_structure_break'
-                    return {**result, "action": "CLOSE"}
+                    return {**result, "action": Action.CLOSE}
             if pm.side == 'SHORT' and swings['last_swing_high'] is not None:
                 threshold = swings['last_swing_high'] * 1.005
                 if close_prev > threshold and close_curr > threshold:
                     pm.exit_reason = 'v53_structure_break'
-                    return {**result, "action": "CLOSE"}
+                    return {**result, "action": Action.CLOSE}
 
         r_unit = pm.risk_dist
         if r_unit == 0:
@@ -90,54 +113,54 @@ class V53SopStrategy(TradingStrategy):
 
         # === 時間退出 ===
         hours_held = (datetime.now(timezone.utc) - pm.entry_time).total_seconds() / 3600
-        if hours_held >= Cfg.STAGE1_MAX_HOURS and not pm.is_first_partial:
+        if hours_held >= Cfg.STAGE1_MAX_HOURS and not self.is_first_partial:
             logger.warning(
                 f"[V53] {pm.symbol} Time exit: "
                 f"{hours_held:.1f}h >= {Cfg.STAGE1_MAX_HOURS}h"
             )
             pm.exit_reason = 'stage1_timeout'
-            return {**result, "action": "CLOSE", "reason": "TIME_EXIT"}
+            return {**result, "action": Action.CLOSE, "reason": "TIME_EXIT"}
 
         # === 2.5R 減倉 ===
-        if not pm.is_second_partial and current_r >= 2.0:
-            pm.is_second_partial = True
-            pm.is_first_partial = True
-            pm.is_1r_protected = True
+        if not self.is_second_partial and current_r >= 2.0:
+            self.is_second_partial = True
+            self.is_first_partial = True
+            self.is_1r_protected = True
             if pm.side == 'LONG':
                 new_sl = pm.avg_entry + (r_unit * 1.5)
             else:
                 new_sl = pm.avg_entry - (r_unit * 1.5)
             pm.current_sl = new_sl
-            pm.is_trailing_active = True
+            self.is_trailing_active = True
             return {
                 **result,
-                "action": "V53_REDUCE_25R",
+                "action": Action.PARTIAL_CLOSE,
                 "reason": "V53_REDUCE_25R",
                 "new_sl": new_sl,
                 "close_pct": Cfg.SECOND_PARTIAL_PCT / 100.0,
             }
 
         # === 1.5R 減倉 ===
-        elif not pm.is_first_partial and current_r >= 1.5:
-            pm.is_first_partial = True
-            pm.is_1r_protected = True
+        elif not self.is_first_partial and current_r >= 1.5:
+            self.is_first_partial = True
+            self.is_1r_protected = True
             if pm.side == 'LONG':
                 new_sl = pm.avg_entry + (r_unit * 1.0)
             else:
                 new_sl = pm.avg_entry - (r_unit * 1.0)
             pm.current_sl = new_sl
-            pm.is_trailing_active = True
+            self.is_trailing_active = True
             return {
                 **result,
-                "action": "V53_REDUCE_15R",
+                "action": Action.PARTIAL_CLOSE,
                 "reason": "V53_REDUCE_15R",
                 "new_sl": new_sl,
                 "close_pct": Cfg.FIRST_PARTIAL_PCT / 100.0,
             }
 
         # === 1.0R 移損 ===
-        elif not pm.is_1r_protected and current_r >= 1.0:
-            pm.is_1r_protected = True
+        elif not self.is_1r_protected and current_r >= 1.0:
+            self.is_1r_protected = True
             if pm.side == 'LONG':
                 new_sl = pm.avg_entry + (r_unit * 0.3)
             else:
@@ -146,7 +169,7 @@ class V53SopStrategy(TradingStrategy):
             result = {**result, "reason": "V53_1R_PROTECT", "new_sl": new_sl}
 
         # === ATR trailing ===
-        if pm.is_trailing_active and pm.atr is not None:
+        if self.is_trailing_active and pm.atr is not None:
             trailing_dist = pm.atr * Cfg.APLUS_TRAILING_ATR_MULT
             if pm.side == 'LONG':
                 new_sl = pm.highest_price - trailing_dist
@@ -160,3 +183,8 @@ class V53SopStrategy(TradingStrategy):
                     result = {**result, "new_sl": new_sl}
 
         return result
+
+
+# 自動註冊至 StrategyFactory
+from trader.strategies.base import StrategyFactory
+StrategyFactory.register("v53_sop", V53SopStrategy)

@@ -113,8 +113,8 @@ class TestPositionManagerSerialization:
         pm.is_first_partial = True
 
         d = pm.to_dict()
-        assert d['v53_state'] is not None
-        assert d['v53_state']['is_1r_protected'] == True
+        assert d['strategy_state'] is not None
+        assert d['strategy_state']['is_1r_protected'] == True
 
         pm2 = PositionManager.from_dict(d)
         assert pm2.is_v6_pyramid == False
@@ -320,7 +320,7 @@ class TestPositionExitDecision:
                          stage=1, neckline=110)
         df_1h = _make_df_1h_flat(n=20, close=102.0, vol_ma=1000, volume=1000)
         d = pm.monitor(102.0, df_1h)
-        assert d['action'] == 'ACTIVE'
+        assert d['action'] == 'HOLD'
         assert d['reason'] == 'NONE'
         assert d['new_sl'] is None
 
@@ -332,7 +332,7 @@ class TestPositionExitDecision:
                                         base_close=102.0, bos_close=110.0,
                                         atr=1.0, vol_ma=1000.0)
         d = pm.monitor(102.0, df_1h)
-        assert d['action'] == 'ACTIVE'
+        assert d['action'] == 'HOLD'
         assert d['reason'] == 'STRUCTURE_TRAIL_SL'
         assert d['new_sl'] == pytest.approx(94.2, abs=0.01)
         assert pm.current_sl == pytest.approx(94.2, abs=0.01)
@@ -345,7 +345,7 @@ class TestPositionExitDecision:
                                          base_close=98.0, bos_close=90.0,
                                          atr=1.0, vol_ma=1000.0)
         d = pm.monitor(98.0, df_1h)
-        assert d['action'] == 'ACTIVE'
+        assert d['action'] == 'HOLD'
         assert d['reason'] == 'STRUCTURE_TRAIL_SL'
         assert d['new_sl'] == pytest.approx(105.8, abs=0.01)
         assert pm.current_sl == pytest.approx(105.8, abs=0.01)
@@ -356,7 +356,7 @@ class TestPositionExitDecision:
         df_1h = _make_df_1h_flat(n=20, close=102.0)
         df_4h = _make_df_1h_flat(n=5, close=98.0, ema_fast=105.0)
         d = pm.monitor(102.0, df_1h, df_4h)
-        assert d['action'] == 'ACTIVE'
+        assert d['action'] == 'HOLD'
 
     def test_05_4h_ema20_force_short(self):
         """SHORT：V6_4H_EMA20_FORCE_EXIT=False → 4H 條件被忽略，維持 ACTIVE"""
@@ -364,7 +364,7 @@ class TestPositionExitDecision:
         df_1h = _make_df_1h_flat(n=20, close=98.0)
         df_4h = _make_df_1h_flat(n=5, close=110.0, ema_fast=105.0)
         d = pm.monitor(98.0, df_1h, df_4h)
-        assert d['action'] == 'ACTIVE'
+        assert d['action'] == 'HOLD'
 
     def test_06_fast_stop_067r_v6(self):
         """V6 LONG：entry=100, sl=90, price=92.5 → r=-0.75 ≤ -EARLY_STOP_R_THRESHOLD(0.75) → FAST_STOP_067R"""
@@ -409,7 +409,8 @@ class TestPositionExitDecision:
                          neckline=103.0, stage=1, hours_ago=1)
         df_1h = _make_df_1h_flat(n=20, close=106.0, volume=1400.0, vol_ma=1000.0)
         d = pm.monitor(106.0, df_1h)
-        assert d['action'] == 'STAGE2_TRIGGER'
+        assert d['action'] == 'ADD'
+        assert d['add_stage'] == 2
         assert d['reason'] == 'NECKLINE_BREAK'
 
     def test_10_stage3_trigger_ema_pullback(self):
@@ -433,7 +434,8 @@ class TestPositionExitDecision:
                              'ema_slow': 100.0, 'ema_fast': 100.0})
         df_1h = pd.DataFrame(rows)
         d = pm.monitor(103.0, df_1h)
-        assert d['action'] == 'STAGE3_TRIGGER'
+        assert d['action'] == 'ADD'
+        assert d['add_stage'] == 3
         assert d['reason'] == 'EMA_PULLBACK'
 
     def test_11_v53_skips_early_stop_r(self):

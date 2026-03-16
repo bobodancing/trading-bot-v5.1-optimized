@@ -42,7 +42,8 @@ class PositionManager:
         entry_price: float,
         stop_loss: float,
         position_size: float,
-        is_v6_pyramid: bool = True,
+        strategy_name: str = None,
+        is_v6_pyramid: bool = None,  # legacy — resolved to strategy_name
         neckline: Optional[float] = None,
         equity_base: float = 0.0,
         initial_r: float = 0.0,
@@ -55,7 +56,14 @@ class PositionManager:
         self.symbol = symbol
         self.side = side  # 'LONG' or 'SHORT'
         self.trade_id = trade_id or datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S') + '_' + symbol.replace('/', '')
-        self.is_v6_pyramid = is_v6_pyramid
+
+        # 解析 strategy_name（支援舊 is_v6_pyramid 參數）
+        if strategy_name is not None:
+            self.strategy_name = strategy_name
+        elif is_v6_pyramid is not None:
+            self.strategy_name = "v6_pyramid" if is_v6_pyramid else "v53_sop"
+        else:
+            self.strategy_name = "v6_pyramid"
 
         # === Stage 管理（V6.0）===
         self.stage = 1
@@ -92,11 +100,6 @@ class PositionManager:
         self.lowest_price = entry_price
         self.atr: Optional[float] = None
 
-        # === V5.3 相容狀態（非滾倉信號用）===
-        self.is_1r_protected = False
-        self.is_first_partial = False
-        self.is_second_partial = False
-        self.is_trailing_active = False
         self.signal_tier = signal_tier
         self.market_regime = market_regime
 
@@ -125,9 +128,57 @@ class PositionManager:
 
         # === 策略（Strategy Pattern V7 P2）===
         from trader.strategies import StrategyFactory
-        self.strategy = strategy or StrategyFactory.create_strategy(
-            "v6" if self.is_v6_pyramid else "v53"
-        )
+        self.strategy = strategy or StrategyFactory.create(self.strategy_name)
+
+    # ==================== 屬性（Properties）====================
+
+    @property
+    def is_v6_pyramid(self) -> bool:
+        """是否為 V6 金字塔策略（向下相容）"""
+        return self.strategy_name == "v6_pyramid"
+
+    @is_v6_pyramid.setter
+    def is_v6_pyramid(self, value: bool):
+        """設定策略（向下相容 legacy setter）"""
+        self.strategy_name = "v6_pyramid" if value else "v53_sop"
+
+    # --- V53 state proxy properties（委派至 strategy，向下相容）---
+
+    @property
+    def is_1r_protected(self) -> bool:
+        return getattr(self.strategy, 'is_1r_protected', False)
+
+    @is_1r_protected.setter
+    def is_1r_protected(self, value: bool):
+        if hasattr(self.strategy, 'is_1r_protected'):
+            self.strategy.is_1r_protected = value
+
+    @property
+    def is_first_partial(self) -> bool:
+        return getattr(self.strategy, 'is_first_partial', False)
+
+    @is_first_partial.setter
+    def is_first_partial(self, value: bool):
+        if hasattr(self.strategy, 'is_first_partial'):
+            self.strategy.is_first_partial = value
+
+    @property
+    def is_second_partial(self) -> bool:
+        return getattr(self.strategy, 'is_second_partial', False)
+
+    @is_second_partial.setter
+    def is_second_partial(self, value: bool):
+        if hasattr(self.strategy, 'is_second_partial'):
+            self.strategy.is_second_partial = value
+
+    @property
+    def is_trailing_active(self) -> bool:
+        return getattr(self.strategy, 'is_trailing_active', False)
+
+    @is_trailing_active.setter
+    def is_trailing_active(self, value: bool):
+        if hasattr(self.strategy, 'is_trailing_active'):
+            self.strategy.is_trailing_active = value
 
     # ==================== V6.0 滾倉方法 ====================
 
@@ -532,7 +583,10 @@ class PositionManager:
             'entry_time': self.entry_time.isoformat(),
             'highest_price': self.highest_price,
             'lowest_price': self.lowest_price,
-            'is_v6_pyramid': self.is_v6_pyramid,
+            'is_v6_pyramid': self.is_v6_pyramid,   # backward compat
+            'strategy_name': self.strategy_name,
+            'strategy_type': 'v6' if self.is_v6_pyramid else 'v53',  # backward compat
+            'strategy_state': self.strategy.get_state(),
             'signal_tier': self.signal_tier,
             'trade_id': self.trade_id,
             'market_regime': self.market_regime,
@@ -547,25 +601,25 @@ class PositionManager:
             'pending_stop_cancels': self.pending_stop_cancels,
             'original_size': self.original_size,
             'realized_partial_pnl': self.realized_partial_pnl,
-            'strategy_type': 'v6' if self.is_v6_pyramid else 'v53',
-            'v53_state': {
-                'is_1r_protected': self.is_1r_protected,
-                'is_first_partial': self.is_first_partial,
-                'is_second_partial': self.is_second_partial,
-                'is_trailing_active': self.is_trailing_active,
-            } if not self.is_v6_pyramid else None,
         }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'PositionManager':
         """從 dict 反序列化（from positions.json）"""
+        # 向下相容：先讀 strategy_name，沒有則從 is_v6_pyramid/strategy_type 推導
+        _sname = data.get('strategy_name')
+        if _sname is None:
+            _legacy_map = {'v6': 'v6_pyramid', 'v53': 'v53_sop'}
+            _stype = data.get('strategy_type', 'v6' if data.get('is_v6_pyramid', True) else 'v53')
+            _sname = _legacy_map.get(_stype, 'v6_pyramid')
+
         pm = cls(
             symbol=data['symbol'],
             side=data['side'],
             entry_price=data['avg_entry'],
             stop_loss=data['current_sl'],
             position_size=data['total_size'],
-            is_v6_pyramid=data.get('is_v6_pyramid', True),
+            strategy_name=_sname,
             neckline=data.get('neckline'),
             equity_base=data.get('equity_base', 0),
             initial_r=data.get('initial_r', 0),
@@ -598,13 +652,9 @@ class PositionManager:
             except (ValueError, TypeError):
                 pm.entry_time = datetime.now(timezone.utc)
 
-        # 恢復 V5.3 狀態
-        v53_state = data.get('v53_state')
-        if v53_state:
-            pm.is_1r_protected = v53_state.get('is_1r_protected', False)
-            pm.is_first_partial = v53_state.get('is_first_partial', False)
-            pm.is_second_partial = v53_state.get('is_second_partial', False)
-            pm.is_trailing_active = v53_state.get('is_trailing_active', False)
+        # 恢復策略內部 state（strategy_state 優先，向下相容舊 v53_state key）
+        state = data.get('strategy_state') or data.get('v53_state') or {}
+        pm.strategy.load_state(state)
 
         # 恢復 trade_id
         pm.trade_id = data.get('trade_id', datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S') + '_' + data['symbol'].replace('/', ''))
@@ -628,10 +678,5 @@ class PositionManager:
         pm.mtf_aligned = data.get('mtf_aligned')
         pm.volume_grade = data.get('volume_grade')
         pm.tier_score = data.get('tier_score')
-
-        # 恢復策略（Strategy Pattern V7 P2）
-        from trader.strategies import StrategyFactory
-        strategy_type = data.get('strategy_type', 'v6' if pm.is_v6_pyramid else 'v53')
-        pm.strategy = StrategyFactory.create_strategy(strategy_type)
 
         return pm

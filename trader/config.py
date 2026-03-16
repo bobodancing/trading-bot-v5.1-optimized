@@ -194,12 +194,17 @@ class ConfigV6:
         '2B_BREAKOUT': True,
     }
 
+    # Signal → Strategy 映射（新增策略只需在此加一行 + register class）
+    SIGNAL_STRATEGY_MAP: dict = {
+        "2B": "v6_pyramid",
+    }
+
     # Debug & 日誌
     V6_DEBUG_MODE = False
     V6_DRY_RUN = False
 
     # --- Strategy ---
-    STRATEGY = "v6"  # "v6" | "v53"
+    STRATEGY = "v6_pyramid"
 
     @classmethod
     def get_strategy(cls) -> 'TradingStrategy':

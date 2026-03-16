@@ -45,6 +45,7 @@ from trader.config import ConfigV6 as Config
 from trader.positions import PositionManager
 from trader.persistence import PositionPersistence
 from trader.signals import detect_2b_with_pivots
+from trader.strategies.base import Action
 
 logger = logging.getLogger(__name__)
 
@@ -742,14 +743,15 @@ class TradingBotV6:
                 f"MTF={signal_details.get('_mtf_reason','')}"
             )
 
-            # 建立 PositionManager（策略由 is_v6_pyramid 自動選擇）
+            # 建立 PositionManager（strategy_name 由 SIGNAL_STRATEGY_MAP 決定）
+            strategy_name = Config.SIGNAL_STRATEGY_MAP.get(signal_type, "v6_pyramid")
             pm = PositionManager(
                 symbol=symbol,
                 side=side,
                 entry_price=entry_price,
                 stop_loss=stop_loss,
                 position_size=position_size,
-                is_v6_pyramid=use_v6,
+                strategy_name=strategy_name,
                 neckline=neckline,
                 equity_base=balance,
                 initial_r=initial_r,
@@ -838,14 +840,14 @@ class TradingBotV6:
 
                 # V6.0: 額外取得 4H 數據（用於 EMA20 force exit）
                 df_4h = None
-                if pm.is_v6_pyramid:
+                if pm.strategy_name == "v6_pyramid":
                     df_4h = self.fetch_ohlcv(symbol, '4h', limit=50)
                     if df_4h is not None and not df_4h.empty:
                         df_4h = TechnicalAnalysis.calculate_indicators(df_4h)
 
                 # Monitor（V7 P2 起回傳 Dict）
                 decision = pm.monitor(current_price, df_1h, df_4h)
-                action = decision.get('action', 'ACTIVE')
+                action = decision.get('action', Action.HOLD)
                 new_sl = decision.get('new_sl')
 
                 # SL 變化 → 更新硬止損
@@ -853,27 +855,27 @@ class TradingBotV6:
                     self._update_hard_stop_loss(pm, new_sl)
                     state_changed = True
 
-                # 處理各種動作
-                if action == "CLOSE":
+                # 通用 action dispatch
+                if action == Action.CLOSE:
                     if self._handle_close(pm, current_price):
                         closed_symbols.append(symbol)
                         state_changed = True
                     # 失敗時不加入 closed_symbols，保留持倉待下一週期重試
 
-                elif action == "STAGE2_TRIGGER":
-                    self._handle_stage2(pm, current_price, df_1h)
+                elif action == Action.ADD:
+                    stage = decision.get('add_stage', 2)
+                    if stage == 2:
+                        self._handle_stage2(pm, current_price, df_1h)
+                    else:
+                        self._handle_stage3(pm, current_price, df_1h)
                     state_changed = True
 
-                elif action == "STAGE3_TRIGGER":
-                    self._handle_stage3(pm, current_price, df_1h)
-                    state_changed = True
-
-                elif action == "V53_REDUCE_15R":
-                    self._handle_v53_reduce(pm, Config.FIRST_PARTIAL_PCT, "1.5R", current_price)
-                    state_changed = True
-
-                elif action == "V53_REDUCE_25R":
-                    self._handle_v53_reduce(pm, Config.SECOND_PARTIAL_PCT, "2.5R", current_price)
+                elif action == Action.PARTIAL_CLOSE:
+                    close_pct = decision.get('close_pct', 0.3)
+                    pct_int = round(close_pct * 100)
+                    reason = decision.get('reason', 'PARTIAL_CLOSE')
+                    label = "2.5R" if "25R" in reason else "1.5R"
+                    self._handle_v53_reduce(pm, pct_int, label, current_price)
                     state_changed = True
 
                 # 記錄狀態
@@ -882,7 +884,7 @@ class TradingBotV6:
                 else:
                     profit_pct = (pm.avg_entry - current_price) / pm.avg_entry * 100
 
-                mode = f"V6/S{pm.stage}" if pm.is_v6_pyramid else "V53"
+                mode = f"V6/S{pm.stage}" if pm.strategy_name == "v6_pyramid" else "V53"
                 logger.debug(
                     f"{symbol} [{mode}]: ${current_price:.2f} | "
                     f"PnL={profit_pct:+.2f}% | SL=${pm.current_sl:.2f}"
@@ -1090,7 +1092,7 @@ class TradingBotV6:
                 entry_price=entry_price,
                 stop_loss=stop_loss,
                 position_size=position_size,
-                is_v6_pyramid=False,
+                strategy_name="v53_sop",
                 initial_r=position_size * abs(entry_price - stop_loss),
             )
             pm.entry_time = datetime.now(timezone.utc)

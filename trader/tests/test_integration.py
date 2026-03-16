@@ -114,7 +114,7 @@ class TestFullPathNormal:
 
         # 設 monitor 回傳（mock strategy decision）
         pm.monitor = MagicMock(return_value={
-            'action': 'ACTIVE', 'reason': 'HOLD',
+            'action': 'HOLD', 'reason': 'HOLD',
             'new_sl': 49500.0,  # trailing SL 上移
         })
 
@@ -184,7 +184,7 @@ class TestFullPathNormal:
             df_1h = _make_ohlcv_df(price)
             bot.data_provider.fetch_ohlcv = MagicMock(return_value=df_1h)
             pm.monitor = MagicMock(return_value={
-                'action': 'ACTIVE', 'reason': 'HOLD', 'new_sl': None,
+                'action': 'HOLD', 'reason': 'HOLD', 'new_sl': None,
             })
             bot.monitor_positions()
             assert 'BTC/USDT' in bot.active_trades

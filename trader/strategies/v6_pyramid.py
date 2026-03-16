@@ -7,7 +7,7 @@ V7 P2: V6.0 滾倉策略實作
 - 4H EMA20 強制平倉（4H_EMA20_FORCE）
 - 反向 2B 強制平倉（REVERSE_2B）
 - 結構追蹤移損（STRUCTURE_TRAIL_SL）
-- Stage 2 / Stage 3 觸發（STAGE2_TRIGGER / STAGE3_TRIGGER）
+- Stage 2 / Stage 3 觸發（ADD add_stage=2/3）
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     import pandas as pd
     from trader.positions import PositionManager
 
-from trader.strategies.base import TradingStrategy, DecisionDict, _apply_common_pre
+from trader.strategies.base import Action, TradingStrategy, DecisionDict, _apply_common_pre
 
 logger = logging.getLogger(__name__)
 
@@ -46,16 +46,17 @@ class V6PyramidStrategy(TradingStrategy):
         5. 反向 2B 強制平倉
         6. 結構追蹤移損
         7. Stage Trigger 檢查
-        8. ACTIVE（持倉中）
+        8. HOLD（持倉中）
         """
         from trader.config import ConfigV6 as Cfg
         from trader.structure import StructureAnalysis
 
         result: DecisionDict = {
-            "action": "ACTIVE",
+            "action": Action.HOLD,
             "reason": "NONE",
             "new_sl": None,
             "close_pct": None,
+            "add_stage": None,
         }
 
         # === 共同前處理（SL / Early Stop）===
@@ -77,7 +78,7 @@ class V6PyramidStrategy(TradingStrategy):
                         f"{Cfg.PROFIT_PULLBACK_THRESHOLD * 100:.0f}%"
                     )
                     pm.exit_reason = 'profit_pullback'
-                    return {**result, "action": "CLOSE", "reason": "PROFIT_PULLBACK"}
+                    return {**result, "action": Action.CLOSE, "reason": "PROFIT_PULLBACK"}
 
         if pm.side == 'SHORT' and pm.lowest_price < pm.avg_entry:
             mfe = pm.avg_entry - pm.lowest_price
@@ -92,7 +93,7 @@ class V6PyramidStrategy(TradingStrategy):
                         f"{Cfg.PROFIT_PULLBACK_THRESHOLD * 100:.0f}%"
                     )
                     pm.exit_reason = 'profit_pullback'
-                    return {**result, "action": "CLOSE", "reason": "PROFIT_PULLBACK"}
+                    return {**result, "action": Action.CLOSE, "reason": "PROFIT_PULLBACK"}
 
         # === Stage 1 超時退出 ===
         if pm.stage == 1:
@@ -103,7 +104,7 @@ class V6PyramidStrategy(TradingStrategy):
                     f"{hours_held:.1f}h >= {Cfg.V6_STAGE1_MAX_HOURS}h"
                 )
                 pm.exit_reason = 'stage1_timeout'
-                return {**result, "action": "CLOSE", "reason": "TIME_EXIT"}
+                return {**result, "action": Action.CLOSE, "reason": "TIME_EXIT"}
 
         # === 4H EMA20 強制平倉 ===
         if Cfg.V6_4H_EMA20_FORCE_EXIT and df_4h is not None and len(df_4h) > 0:
@@ -121,14 +122,14 @@ class V6PyramidStrategy(TradingStrategy):
                         f"close=${close_4h:.2f} < EMA20=${ema20_4h:.2f}"
                     )
                     pm.exit_reason = 'ema20_4h'
-                    return {**result, "action": "CLOSE", "reason": "4H_EMA20_FORCE"}
+                    return {**result, "action": Action.CLOSE, "reason": "4H_EMA20_FORCE"}
                 if pm.side == 'SHORT' and close_4h > ema20_4h:
                     logger.warning(
                         f"[V6] {pm.symbol} 4H EMA20 breakdown: "
                         f"close=${close_4h:.2f} > EMA20=${ema20_4h:.2f}"
                     )
                     pm.exit_reason = 'ema20_4h'
-                    return {**result, "action": "CLOSE", "reason": "4H_EMA20_FORCE"}
+                    return {**result, "action": Action.CLOSE, "reason": "4H_EMA20_FORCE"}
 
         # === 反向 2B 強制平倉（穿透深度 + 下一根確認）===
         if Cfg.V6_REVERSE_2B_EXIT and df_1h is not None and len(df_1h) >= 2:
@@ -156,7 +157,7 @@ class V6PyramidStrategy(TradingStrategy):
                     )
                     pm.exit_reason = 'reverse_2b'
                     pm.reverse_2b_depth_atr = depth_atr
-                    return {**result, "action": "CLOSE", "reason": "REVERSE_2B"}
+                    return {**result, "action": Action.CLOSE, "reason": "REVERSE_2B"}
 
             if pm.side == 'SHORT' and swings['last_swing_low'] is not None:
                 sl_price = swings['last_swing_low']
@@ -174,7 +175,7 @@ class V6PyramidStrategy(TradingStrategy):
                     )
                     pm.exit_reason = 'reverse_2b'
                     pm.reverse_2b_depth_atr = depth_atr
-                    return {**result, "action": "CLOSE", "reason": "REVERSE_2B"}
+                    return {**result, "action": Action.CLOSE, "reason": "REVERSE_2B"}
 
         # === 嚴謹結構追蹤移損 (HL/LH + Temporal BOS) ===
         trailing_new_sl = None
@@ -213,8 +214,13 @@ class V6PyramidStrategy(TradingStrategy):
 
         # === Stage Trigger 檢查 ===
         if pm.stage == 1 and pm.check_stage2_trigger(df_1h):
-            return {**result, "action": "STAGE2_TRIGGER", "reason": "NECKLINE_BREAK"}
+            return {**result, "action": Action.ADD, "reason": "NECKLINE_BREAK", "add_stage": 2}
         if pm.stage == 2 and pm.check_stage3_trigger(df_1h):
-            return {**result, "action": "STAGE3_TRIGGER", "reason": "EMA_PULLBACK"}
+            return {**result, "action": Action.ADD, "reason": "EMA_PULLBACK", "add_stage": 3}
 
         return result
+
+
+# 自動註冊至 StrategyFactory
+from trader.strategies.base import StrategyFactory
+StrategyFactory.register("v6_pyramid", V6PyramidStrategy)
