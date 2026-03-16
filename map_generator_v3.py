@@ -1,4 +1,4 @@
-# 最後更新：2026-02-27
+# 最後更新：2026-03-16
 import os
 import ast
 from pathlib import Path
@@ -31,19 +31,19 @@ KEY_NON_PYTHON_FILES = [
 ARCHITECTURE_OVERVIEW = """\
 ## 🗺 架構總覽
 
-> 雙 systemd 服務：trader.service（v6/bot.py）+ scanner.service（scanner/market_scanner.py）
+> 雙 systemd 服務：trader.service（trader/bot.py）+ scanner.service（scanner/market_scanner.py）
 > tradingStart.py 已廢棄（Bot/Scanner 分離後不再需要）
 
 ```
 scanner/
 └── market_scanner.py    ← 四層 Scanner（流動性→動能→形態→相關性）[scanner.service]
 
-v6/                      ← [trader.service]
+trader/                  ← [trader.service]
 ├── bot.py               ← TradingBotV6 主引擎（monitor loop + SIGTERM handler + TradeFilter）
-├── positions.py         ← PositionManager（雙路徑 V6/V5.3 + 出場決策委派）
+├── positions.py         ← PositionManager（strategy_name 插件 + Stage 管理 + 出場委派）
 ├── signals.py           ← detect_2b_with_pivots（入場信號）
-├── structure.py         ← StructureAnalysis（swing point / neckline）
-├── config.py            ← ConfigV6（交易參數；secrets 另存 secrets.json）
+├── structure.py         ← StructureAnalysis（swing point / neckline / BOS 追蹤）
+├── config.py            ← ConfigV6（交易參數 + SIGNAL_STRATEGY_MAP；secrets 另存 secrets.json）
 ├── persistence.py       ← PositionPersistence（atomic write）
 ├── infrastructure/
 │   ├── api_client.py    ← BinanceFuturesClient（HMAC 簽章 + recvWindow + -1021 偵測）
@@ -57,10 +57,10 @@ v6/                      ← [trader.service]
 │   └── manager.py       ← PrecisionHandler, RiskManager, SignalTierSystem
 ├── execution/
 │   └── order_engine.py  ← OrderExecutionEngine（下單封裝）
-└── strategies/          ← Strategy Pattern（出場邏輯依 V6/V5.3 路徑分派）
-    ├── base.py          ← ExitStrategy ABC
+└── strategies/          ← 策略插件層（Registry Pattern，新策略 register 即可）
+    ├── base.py          ← Action enum + DecisionDict + TradingStrategy ABC + StrategyFactory
     ├── v6_pyramid.py    ← V6PyramidStrategy（結構追蹤 + profit_pullback + stage trigger）
-    └── v53_sop.py       ← V53SopStrategy（1.0R/1.5R/2.5R SOP）
+    └── v53_sop.py       ← V53SopStrategy（1.0R/1.5R/2.0R SOP + state isolation）
 ```
 """
 
