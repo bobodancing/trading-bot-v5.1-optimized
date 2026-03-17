@@ -211,3 +211,183 @@ def detect_2b_with_pivots(
     )
 
     return True, signal_details
+
+
+def detect_ema_pullback(
+    df: pd.DataFrame,
+    ema_pullback_threshold: float = 0.02,
+) -> Tuple[bool, Optional[Dict]]:
+    """
+    EMA 回撤信號偵測
+
+    邏輯：
+    - 多頭趨勢（ema_fast > ema_slow）中，價格回撤觸及 ema_fast 後反彈 → LONG
+    - 空頭趨勢（ema_fast < ema_slow）中，價格反彈觸及 ema_fast 後回落 → SHORT
+
+    注意：signal_details 必須包含 lowest_point / highest_point（raw 價格），
+    因為 _execute_trade V5.3 路徑會用它當 extreme，再由 risk_manager 計算止損。
+    不要預先加 ATR buffer，否則會雙重 buffer。
+
+    Returns:
+        (has_signal, signal_details)
+    """
+    if df is None or len(df) < 30:
+        return False, None
+
+    if 'ema_fast' not in df.columns or 'ema_slow' not in df.columns:
+        return False, None
+
+    current = df.iloc[-1]
+    prev = df.iloc[-2]
+
+    ema_fast = current['ema_fast']
+    ema_slow = current['ema_slow']
+    price = current['close']
+    atr = current.get('atr', 0)
+    volume = current.get('volume', 0)
+    vol_ma = current.get('vol_ma', 0)
+
+    threshold = ema_fast * ema_pullback_threshold
+
+    signal_side = None
+    signal_details = {}
+
+    # 多頭趨勢：價格回撤到 ema_fast 附近後反彈
+    if ema_fast > ema_slow:
+        if abs(prev['low'] - ema_fast) < threshold and price > ema_fast:
+            signal_side = 'LONG'
+            signal_details = {
+                'side': 'LONG',
+                'entry_price': price,
+                'lowest_point': prev['low'],               # raw（給 _execute_trade 用）
+                'stop_level': min(prev['low'], ema_slow) - atr * 0.5,
+                'target_ref': df['high'].iloc[-20:].max(),
+                'atr': atr,
+                'volume': volume,
+                'vol_ma': vol_ma,
+                'signal_type': 'EMA_PULLBACK',
+                'candle_confirmed': price > current['open'],
+                'neckline': None,
+                'fakeout_depth_atr': 0.0,
+                'detection_method': 'ema_pullback',
+            }
+
+    # 空頭趨勢：價格反彈到 ema_fast 附近後回落
+    elif ema_fast < ema_slow:
+        if abs(prev['high'] - ema_fast) < threshold and price < ema_fast:
+            signal_side = 'SHORT'
+            signal_details = {
+                'side': 'SHORT',
+                'entry_price': price,
+                'highest_point': prev['high'],              # raw（給 _execute_trade 用）
+                'stop_level': max(prev['high'], ema_slow) + atr * 0.5,
+                'target_ref': df['low'].iloc[-20:].min(),
+                'atr': atr,
+                'volume': volume,
+                'vol_ma': vol_ma,
+                'signal_type': 'EMA_PULLBACK',
+                'candle_confirmed': price < current['open'],
+                'neckline': None,
+                'fakeout_depth_atr': 0.0,
+                'detection_method': 'ema_pullback',
+            }
+
+    if signal_side is None:
+        return False, None
+
+    # 量能過濾（原始邏輯：hardcoded 0.6 門檻，signal_strength 固定 moderate）
+    vol_ratio = volume / vol_ma if vol_ma > 0 else 0
+    if vol_ratio < 0.6:
+        return False, None
+
+    signal_details['vol_ratio'] = vol_ratio
+    signal_details['signal_strength'] = 'moderate'
+
+    logger.info(f"📈 發現 EMA 回撤信號: {signal_side}")
+
+    return True, signal_details
+
+
+def detect_volume_breakout(
+    df: pd.DataFrame,
+    volume_breakout_mult: float = 2.0,
+) -> Tuple[bool, Optional[Dict]]:
+    """
+    量能突破信號偵測
+
+    邏輯：
+    - 量比超過 volume_breakout_mult 倍
+    - 價格突破近 10 根 K 線高點 + 陽線確認 → LONG
+    - 價格跌破近 10 根 K 線低點 + 陰線確認 → SHORT
+
+    注意：signal_details 必須包含 lowest_point / highest_point（raw 價格），
+    因為 _execute_trade V5.3 路徑會用它當 extreme，再由 risk_manager 計算止損。
+
+    Returns:
+        (has_signal, signal_details)
+    """
+    if df is None or len(df) < 30:
+        return False, None
+
+    current = df.iloc[-1]
+    volume = current.get('volume', 0)
+    vol_ma = current.get('vol_ma', 0)
+    atr = current.get('atr', 0)
+
+    vol_ratio = volume / vol_ma if vol_ma > 0 else 0
+
+    if vol_ratio < volume_breakout_mult:
+        return False, None
+
+    recent_high = df['high'].iloc[-10:-1].max()
+    recent_low = df['low'].iloc[-10:-1].min()
+
+    price = current['close']
+    signal_side = None
+    signal_details = {}
+
+    # 量能突破 + 突破高點 + 陽線確認
+    if price > recent_high and price > current['open']:
+        signal_side = 'LONG'
+        signal_details = {
+            'side': 'LONG',
+            'entry_price': price,
+            'lowest_point': recent_low,                # raw（給 _execute_trade 用）
+            'stop_level': recent_low - atr * 0.5,
+            'target_ref': price + (price - recent_low),
+            'atr': atr,
+            'volume': volume,
+            'vol_ma': vol_ma,
+            'signal_type': 'VOLUME_BREAKOUT',
+            'candle_confirmed': True,
+            'neckline': None,
+            'fakeout_depth_atr': 0.0,
+        }
+    # 量能突破 + 跌破低點 + 陰線確認
+    elif price < recent_low and price < current['open']:
+        signal_side = 'SHORT'
+        signal_details = {
+            'side': 'SHORT',
+            'entry_price': price,
+            'highest_point': recent_high,              # raw（給 _execute_trade 用）
+            'stop_level': recent_high + atr * 0.5,
+            'target_ref': price - (recent_high - price),
+            'atr': atr,
+            'volume': volume,
+            'vol_ma': vol_ma,
+            'signal_type': 'VOLUME_BREAKOUT',
+            'candle_confirmed': True,
+            'neckline': None,
+            'fakeout_depth_atr': 0.0,
+        }
+
+    if signal_side is None:
+        return False, None
+
+    # 量能分級（原始邏輯：signal_strength 固定 strong）
+    signal_details['vol_ratio'] = vol_ratio
+    signal_details['signal_strength'] = 'strong'
+
+    logger.info(f"📊 發現量能突破信號: {signal_side} (量能 {vol_ratio:.2f}x)")
+
+    return True, signal_details

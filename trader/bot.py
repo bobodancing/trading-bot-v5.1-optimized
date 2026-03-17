@@ -44,7 +44,7 @@ from trader.execution.order_engine import OrderExecutionEngine
 from trader.config import ConfigV6 as Config
 from trader.positions import PositionManager
 from trader.persistence import PositionPersistence
-from trader.signals import detect_2b_with_pivots
+from trader.signals import detect_2b_with_pivots, detect_ema_pullback, detect_volume_breakout
 from trader.strategies.base import Action
 
 logger = logging.getLogger(__name__)
@@ -425,12 +425,41 @@ class TradingBotV6:
                     details_2b['signal_type'] = '2B'
                     signals_found.append(('2B', details_2b))
 
+                # EMA 回撤信號
+                if Config.ENABLE_EMA_PULLBACK:
+                    has_pb, details_pb = detect_ema_pullback(
+                        df_signal,
+                        ema_pullback_threshold=Config.EMA_PULLBACK_THRESHOLD,
+                    )
+                    if has_pb and details_pb is not None:
+                        details_pb['signal_type'] = 'EMA_PULLBACK'
+                        signals_found.append(('EMA_PULLBACK', details_pb))
+
+                # 量能突破信號
+                if Config.ENABLE_VOLUME_BREAKOUT:
+                    has_bo, details_bo = detect_volume_breakout(
+                        df_signal,
+                        volume_breakout_mult=Config.VOLUME_BREAKOUT_MULT,
+                    )
+                    if has_bo and details_bo is not None:
+                        details_bo['signal_type'] = 'VOLUME_BREAKOUT'
+                        signals_found.append(('VOLUME_BREAKOUT', details_bo))
+
                 if not signals_found:
                     logger.debug(f"{symbol}: 無信號（市場OK: {market_reason}）")
                     continue
 
+                # 優先級排序：2B > VOLUME_BREAKOUT > EMA_PULLBACK
+                _signal_priority = {'2B': 1, 'VOLUME_BREAKOUT': 2, 'EMA_PULLBACK': 3}
+                signals_found.sort(key=lambda x: _signal_priority.get(x[0], 99))
+
+                # 列出所有偵測到的信號
+                all_sigs = ', '.join(
+                    f"{t} {d['side']} 量能={d.get('vol_ratio',0):.2f}x"
+                    for t, d in signals_found
+                )
                 best_type, signal_details = signals_found[0]
-                logger.info(f"{symbol}: 偵測到信號 [{best_type} {signal_details['side']} 量能={signal_details.get('vol_ratio',0):.2f}x]")
+                logger.info(f"{symbol}: 偵測到信號 [{all_sigs}]")
                 signal_side = signal_details['side']
 
                 # 交易方向過濾

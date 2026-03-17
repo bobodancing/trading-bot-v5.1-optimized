@@ -78,9 +78,15 @@ class ConfigV6:
     TIER_B_POSITION_MULT = 0.7
     TIER_C_POSITION_MULT = 0.5
 
-    # EMA 指標週期（給 calculate_indicators 計算欄位用）
+    # EMA 回撤進場信號
+    ENABLE_EMA_PULLBACK = True
     EMA_PULLBACK_FAST = 10
     EMA_PULLBACK_SLOW = 20
+    EMA_PULLBACK_THRESHOLD = 0.02  # 回撤觸及 EMA 的容差（佔 EMA 價格比例）
+
+    # 量能突破進場信號
+    ENABLE_VOLUME_BREAKOUT = True
+    VOLUME_BREAKOUT_MULT = 2.0  # 量比門檻（量 ÷ 均量 >= 此值才觸發）
 
     # 市場過濾器
     ENABLE_MARKET_FILTER = True
@@ -192,11 +198,15 @@ class ConfigV6:
     # 策略選擇器
     STRATEGY_USE_V6 = {
         '2B_BREAKOUT': True,
+        'EMA_PULLBACK': True,
+        'VOLUME_BREAKOUT': True,
     }
 
     # Signal → Strategy 映射（新增策略只需在此加一行 + register class）
     SIGNAL_STRATEGY_MAP: dict = {
         "2B": "v6_pyramid",
+        "EMA_PULLBACK": "v53_sop",
+        "VOLUME_BREAKOUT": "v53_sop",
     }
 
     # Debug & 日誌
