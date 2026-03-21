@@ -1,6 +1,6 @@
 # Trading Bot — Code Review & Roadmap
 
-> 小波 | 初版 2026-02-17 | 更新 2026-03-20
+> 小波 | 初版 2026-02-17 | 更新 2026-03-21
 > 架構參考：`project_structure_map_v3.md`
 
 ---
@@ -11,16 +11,18 @@
 
 ---
 
-## 整體評價：8.5 / 10
+## 整體評價：7.7 / 10（2026-03-21 嚴格重評，待修 #6/#10/#12 修復後微升）
 
-| 維度 | 原分 | 現分 | 說明 |
-|------|------|------|------|
-| 架構設計 | 8 | **9.5** | `trader/` 平台化 + 策略 Registry 拔插 + infrastructure 分層 |
-| 策略邏輯 | 8.5 | 8.5 | 風險壓縮正確、三階段滾倉嚴謹 |
-| 測試覆蓋 | 5 | **8.5** | 281 passed（integration + 28 test modules） |
-| 錯誤處理 | 6.5 | **8.0** | OrderEngine + _handle_close rollback + _sync 四重防護 + ghost adoption |
-| 可維護性 | 6 | **9.0** | 模組拆分 + 策略拔插 + 設定分層 + 瘦身 -286 行 |
-| 文件品質 | 9 | 9 | README + project_structure_map_v3.md |
+| 維度 | 原分 | 前次 | 現分 | 扣分原因 |
+|------|------|------|------|---------|
+| 架構設計 | 8 | 9.5 | **8.5** | bot.py 仍是 monolith（Phase 3 未做）+ Config global state（待修 #4） |
+| 策略邏輯 | 8.5 | 8.5 | **7.0** | V6 存廢未定（Stage 2 到達率 8.6%）+ Three-Tier Defense 未經驗證 |
+| 測試覆蓋 | 5 | 8.5 | **7.5** | 無 coverage %、無 E2E test（Scanner pytest ✅ 待修 #6 已修） |
+| 錯誤處理 | 6.5 | 8.0 | **7.0** | API client error 不一致（待修 #11）+ 無滑價保護（待修 #9） |
+| 可維護性 | 6 | 9.0 | **8.0** | monolith 未拆（magic numbers ✅ #10 已修 + schema version ✅ #12 已修） |
+| 文件品質 | 9 | 9.0 | **8.0** | 無 operational runbook、無 ADR（決策脈絡只在對話紀錄） |
+
+> **7.5 = 堅實的個人專案，但還不是 production-grade 交易系統。** 待修問題修完 + 4/3 驗證通過 → 8.0~8.5 合理回升空間。
 
 ---
 
@@ -143,58 +145,68 @@
 | # | 問題 | 威脅 |
 |---|------|------|
 | 4 | Config global state（難測試、不支援多 instance） | 穩定：測試品質受限 |
-| 6 | Scanner 無 pytest | 穩定：信號品質無自動驗證 |
 | 9 | ATR 滑價侵蝕 R-value（市價單） | 穩定：實際 R 低於預期 |
 
 ### 低優先
 
 | # | 問題 |
 |---|------|
-| 10 | Magic numbers 散落（atr * 3, 0.995 等未抽至 Config） |
 | 11 | BinanceFuturesClient error handling 不一致（包 dict） |
-| 12 | positions.json 無版本號（schema 相容性） |
+
+### ✅ 已修復
+
+| # | 問題 | 修復日期 |
+|---|------|---------|
+| 6 | ~~Scanner 無 pytest~~ | 2026-03-21（19 tests） |
+| 10 | ~~Magic numbers 散落~~ | 2026-03-21（8 個 → Config） |
+| 12 | ~~positions.json 無版本號~~ | 2026-03-21（schema v2 envelope） |
 
 ---
 
 ## Roadmap
 
 ```
-Phase 1（穩定性修補）✅
+=== 已完成 ===
+穩定性修補 → V7 P1/P2 → Ghost Fix → Signal Quality → Risk Guard V1
+→ Integration Test → Trader Refactor (Phase 0+1+2) → Three-Tier Defense (3/20)
+
+=== 你在這裡 === Testnet 數據蒐集中（→ 4/3 檢視）
   |
-V7 P1（Rate Limit + 平倉優先）✅
+4/3 分析 P1：Three-Tier Defense 總驗證 + V6 存廢決定
   |
-V7 P2（Strategy Pattern）✅
+4/3 分析 P2：Capture ratio ATR 回測 + Time exit 分析（P1 通過才做）
   |
-Ghost Fix + Adoption ✅
+V7 P3（ATR 滑價保護）
   |
-Testnet 驗證 + Signal Quality ✅ + Risk Guard V1 ✅ + Integration Test ✅
+=== 中期 ===
+決策品質驗證 → 資本重分配 → 參數微調
   |
-Trader Refactor（Phase 0+1+2）✅  ── v6→trader 改名 + 瘦身 + 插件化
+=== 長期 ===
+重構 + 效能 → Shadow Mode（需 Refactor Phase 3）→ DEX 遷移
   |
-  ├── [選做] Remote Monitoring QMD endpoint
-  |
-你在這裡 ── Three-Tier Defense 完成（3/20），Testnet 數據蒐集中（驗證 Stage 2 到達率改善）
-  |
-V7 P3（ATR 滑價）── 需 Testnet 數據
-  |
-Phase 2（測試補齊：Scanner pytest）
-  |
-Phase 3（決策品質驗證）── 需 Testnet 數據
-  |
-Phase 4（資本重分配）
-  |
-Phase 5（參數微調）
-  |
-Phase 6（進一步重構 + 效能）
-  |
-Phase 7（Shadow Mode）── Trader Refactor Phase 3 為前提
-  |
-Phase 8（DEX 遷移）── 插件化已就緒
+  ├── [獨立] Refactor Phase 3：bot.py 拆分（Shadow Mode 前置）
+  ├── [獨立] Scanner pytest
+  └── [選做] Remote Monitoring QMD endpoint
 ```
 
 ---
 
-### V7 P3：ATR 動態滑價保護 — 需 Testnet 數據
+### 近期：4/3 數據分析（3 Phase）
+
+**P1 驗證（4/3 當天）**
+- Three-Tier Defense 總驗證：Stage 2 到達率 vs 8.6%、avg hold vs 0.7h、capture ratio、Tier 1/2 分析
+- V6 存廢決定：go/kill 二選一
+
+**P2 優化（P1 通過才做）**
+- Capture ratio → ATR mult 回測（低 cap <0.3，ATR×2.0 vs 1.5）
+- Time exit 後續表現（需寫工具記錄 exit 後 4h/12h/24h 價格）
+
+**P3 基建（獨立時間線）**
+- Trader Refactor Phase 3：bot.py 拆分（Shadow Mode 前置）
+
+---
+
+### V7 P3：ATR 動態滑價保護
 
 | 項目 | 做法 |
 |------|------|
@@ -204,63 +216,23 @@ Phase 8（DEX 遷移）── 插件化已就緒
 
 ---
 
-### Phase 2：測試補齊
+### 中期
 
-| 項目 | 目的 |
+| 階段 | 內容 |
 |------|------|
-| ~~Mock Exchange（close_position rollback）~~ | ✅ 90 tests |
-| ~~Integration test（StatefulMockEngine）~~ | ✅ 259 tests |
-| Scanner pytest | 解決待修 #6 |
+| 決策品質驗證 | Tier A EV（PF>1.8, Sharpe>1.5）/ 滾倉 vs 固定 / Regime 有效性 |
+| 資本重分配 | 動態風險乘數 + 總曝險 + 板塊持倉上限 |
+| 參數微調 | SL_ATR_BUFFER / Stage3_Ratio / Trailing（*嚴禁動核心 2B 結構邏輯*）|
 
 ---
 
-### Phase 3：決策品質驗證 — 需 Testnet 數據
+### 長期
 
-| 問題 | 成功標準 |
-|------|---------|
-| Tier A 是否高正 EV？ | PF > 1.8, Sharpe > 1.5 |
-| 滾倉是否優於固定倉位？ | 影子計算 Stage 1 only 對比 |
-| Regime 判斷是否有效？ | 不同 Regime 績效顯著差異 |
-
----
-
-### Phase 4：資本重分配
-
-| 項目 | 做法 |
+| 階段 | 內容 |
 |------|------|
-| 動態風險乘數 | Bull + Tier A → x1.5~1.8 / Choppy + Tier C → x0.5 |
-| 動態總曝險 | Bull: MAX_TOTAL_RISK 5% → 8% |
-| 板塊上限 | 同板塊持 3 個 → 暫停新信號 |
-
----
-
-### Phase 5：參數微調
-
-- SL_ATR_BUFFER / Stage3_Ratio / Trailing 依 Regime 差異化
-- **嚴禁動核心 2B 結構邏輯**
-
----
-
-### Phase 6：重構 + 效能
-
-- Config instance-based + DI
-- StructureAnalysis caching
-- Scanner async（aiohttp）
-
----
-
-### Phase 7：Shadow Mode
-
-- 主進程 + 影子進程並行，共享 Scanner
-- 影子穩定優於主 → 切換
-- 前提：Trader Refactor Phase 3（bot.py 拆分）
-
----
-
-### Phase 8：DEX 遷移
-
-- dYdX / GMX / Hyperliquid
-- 插件化架構已就緒，DEX 可作為新 execution engine
+| 重構 + 效能 | Config DI + StructureAnalysis caching + Scanner async |
+| Shadow Mode | 主 + 影子並行，30 天穩定優於主 → 切換。前提：Refactor Phase 3 |
+| DEX 遷移 | dYdX / GMX / Hyperliquid。插件化已就緒 |
 
 ---
 
