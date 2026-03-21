@@ -402,11 +402,11 @@ class PositionManager:
         # 條件 1: 前一根 K 線觸碰 EMA20
         if self.side == 'LONG':
             # 做多：前一根 low 接近 EMA20（在 EMA20 上下 2% 以內）
-            touch_threshold = ema_val * 0.02
+            touch_threshold = ema_val * Cfg.STAGE3_EMA_TOUCH_TOLERANCE
             touched_ema = prev['low'] <= ema_val + touch_threshold
         else:
             # 做空：前一根 high 接近 EMA20
-            touch_threshold = ema_val * 0.02
+            touch_threshold = ema_val * Cfg.STAGE3_EMA_TOUCH_TOLERANCE
             touched_ema = prev['high'] >= ema_val - touch_threshold
 
         if not touched_ema:

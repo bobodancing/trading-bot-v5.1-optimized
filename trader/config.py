@@ -141,6 +141,30 @@ class ConfigV6:
     # ===== 診斷設定 =====
     V6_STAGE2_DEBUG_LOG = True   # Stage 2 trigger 診斷 log（True → INFO level 輸出）
 
+    # ===== 從 hardcode 提取的參數（2026-03-21 cleanup）=====
+
+    # 2B 信號：最大穿透深度（ATR 倍數），超過視為趨勢反轉非 fakeout
+    MAX_FAKEOUT_ATR = 3.0
+
+    # 信號止損 ATR buffer（signals.py 用，與 SL_ATR_BUFFER 分開管理）
+    SL_ATR_BUFFER_SIGNAL = 0.5
+
+    # EMA 回撤信號：最低量比（vol / vol_ma）
+    VOLUME_PULLBACK_MIN_RATIO = 0.6
+
+    # 結構破壞容差（0.5%）：價格必須穿越 swing point 此比例才算 break
+    STRUCTURE_BREAK_TOLERANCE = 0.005
+
+    # 結構破壞 lookback（根數）
+    STRUCTURE_BREAK_LOOKBACK = 10
+
+    # ATR ratio 閾值：recent_atr / historical_atr
+    ATR_QUIET_RATIO = 0.8       # < 此值 → quiet market
+    ATR_VOLATILE_RATIO = 1.5    # > 此值 → volatile market
+
+    # Stage 3 EMA 觸碰容差（佔 EMA 價格比例）
+    STAGE3_EMA_TOUCH_TOLERANCE = 0.02
+
     # Swing Point 參數
     SWING_LEFT_BARS = 7
     SWING_RIGHT_BARS = 3

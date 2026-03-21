@@ -92,12 +92,12 @@ class V53SopStrategy(TradingStrategy):
             close_curr = df_1h['close'].iloc[-1]
             close_prev = df_1h['close'].iloc[-2]
             if pm.side == 'LONG' and swings['last_swing_low'] is not None:
-                threshold = swings['last_swing_low'] * 0.995
+                threshold = swings['last_swing_low'] * (1 - Cfg.STRUCTURE_BREAK_TOLERANCE)
                 if close_prev < threshold and close_curr < threshold:
                     pm.exit_reason = 'v53_structure_break'
                     return {**result, "action": Action.CLOSE}
             if pm.side == 'SHORT' and swings['last_swing_high'] is not None:
-                threshold = swings['last_swing_high'] * 1.005
+                threshold = swings['last_swing_high'] * (1 + Cfg.STRUCTURE_BREAK_TOLERANCE)
                 if close_prev > threshold and close_curr > threshold:
                     pm.exit_reason = 'v53_structure_break'
                     return {**result, "action": Action.CLOSE}

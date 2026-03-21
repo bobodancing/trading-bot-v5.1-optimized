@@ -9,6 +9,7 @@ import logging
 import pandas as pd
 from typing import Tuple, Optional, Dict
 
+from trader.config import Config
 from trader.structure import StructureAnalysis
 
 logger = logging.getLogger(__name__)
@@ -182,10 +183,10 @@ def detect_2b_with_pivots(
         return False, None
 
     # 上限：穿透太深視為無效
-    if atr > 0 and fakeout_depth > atr * 3:
+    if atr > 0 and fakeout_depth > atr * Config.MAX_FAKEOUT_ATR:
         logger.debug(
             f"2B {signal_side} filtered: fakeout too deep "
-            f"({fakeout_depth:.2f} > {atr * 3:.2f})"
+            f"({fakeout_depth:.2f} > {atr * Config.MAX_FAKEOUT_ATR:.2f})"
         )
         return False, None
 
@@ -194,10 +195,10 @@ def detect_2b_with_pivots(
     # === 7. 計算止損距離（用 swing point + ATR buffer）===
     if signal_side == 'LONG':
         # 止損 = swing low - 0.5 * ATR（給緩衝）
-        sl_buffer = atr * 0.5 if atr > 0 else 0
+        sl_buffer = atr * Config.SL_ATR_BUFFER_SIGNAL if atr > 0 else 0
         signal_details['stop_loss'] = last_swing_low - sl_buffer
     else:
-        sl_buffer = atr * 0.5 if atr > 0 else 0
+        sl_buffer = atr * Config.SL_ATR_BUFFER_SIGNAL if atr > 0 else 0
         signal_details['stop_loss'] = last_swing_high + sl_buffer
 
     neck_str = f"${signal_details['neckline']:.2f}" if signal_details['neckline'] else 'N/A'
@@ -260,7 +261,7 @@ def detect_ema_pullback(
                 'side': 'LONG',
                 'entry_price': price,
                 'lowest_point': prev['low'],               # raw（給 _execute_trade 用）
-                'stop_level': min(prev['low'], ema_slow) - atr * 0.5,
+                'stop_level': min(prev['low'], ema_slow) - atr * Config.SL_ATR_BUFFER_SIGNAL,
                 'target_ref': df['high'].iloc[-20:].max(),
                 'atr': atr,
                 'volume': volume,
@@ -280,7 +281,7 @@ def detect_ema_pullback(
                 'side': 'SHORT',
                 'entry_price': price,
                 'highest_point': prev['high'],              # raw（給 _execute_trade 用）
-                'stop_level': max(prev['high'], ema_slow) + atr * 0.5,
+                'stop_level': max(prev['high'], ema_slow) + atr * Config.SL_ATR_BUFFER_SIGNAL,
                 'target_ref': df['low'].iloc[-20:].min(),
                 'atr': atr,
                 'volume': volume,
@@ -297,7 +298,7 @@ def detect_ema_pullback(
 
     # 量能過濾（原始邏輯：hardcoded 0.6 門檻，signal_strength 固定 moderate）
     vol_ratio = volume / vol_ma if vol_ma > 0 else 0
-    if vol_ratio < 0.6:
+    if vol_ratio < Config.VOLUME_PULLBACK_MIN_RATIO:
         return False, None
 
     signal_details['vol_ratio'] = vol_ratio

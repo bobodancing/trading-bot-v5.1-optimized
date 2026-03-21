@@ -143,15 +143,17 @@ class TechnicalAnalysis:
     @staticmethod
     def check_structure_break(df: pd.DataFrame, current_price: float, side: str) -> bool:
         """檢查結構是否破壞（雙向版本）"""
-        if not Config.ENABLE_STRUCTURE_BREAK_EXIT or len(df) < 10:
+        lookback = Config.STRUCTURE_BREAK_LOOKBACK
+        if not Config.ENABLE_STRUCTURE_BREAK_EXIT or len(df) < lookback:
             return False
 
+        tol = Config.STRUCTURE_BREAK_TOLERANCE
         if side == 'LONG':
-            swing_low = df['low'].iloc[-10:-1].min()
-            return current_price < swing_low * 0.995
+            swing_low = df['low'].iloc[-lookback:-1].min()
+            return current_price < swing_low * (1 - tol)
         else:
-            swing_high = df['high'].iloc[-10:-1].max()
-            return current_price > swing_high * 1.005
+            swing_high = df['high'].iloc[-lookback:-1].max()
+            return current_price > swing_high * (1 + tol)
 
 
 # ==================== 動態閾值管理器 ====================
@@ -199,9 +201,9 @@ class DynamicThresholdManager:
 
         atr_ratio = recent_atr / historical_atr
 
-        if atr_ratio < 0.8:
+        if atr_ratio < Config.ATR_QUIET_RATIO:
             return Config.ATR_QUIET_MULTIPLIER
-        elif atr_ratio > 1.5:
+        elif atr_ratio > Config.ATR_VOLATILE_RATIO:
             return Config.ATR_VOLATILE_MULTIPLIER
         else:
             return Config.ATR_NORMAL_MULTIPLIER

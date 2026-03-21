@@ -75,8 +75,14 @@ class PositionPersistence:
             for symbol, pos_data in positions_data.items():
                 pos_data['last_updated'] = datetime.now(timezone.utc).isoformat()
 
+            # 包裝 envelope（schema version + positions data）
+            envelope = {
+                "schema_version": 2,
+                "positions": positions_data,
+            }
+
             # 準備寫入內容（pretty print for readability）
-            json_content = json.dumps(positions_data, indent=2, ensure_ascii=False)
+            json_content = json.dumps(envelope, indent=2, ensure_ascii=False)
 
             # Atomic write: 先寫到 temp，再 rename
             import uuid
@@ -122,9 +128,23 @@ class PositionPersistence:
 
         try:
             with open(self.file_path, 'r', encoding=self.encoding) as f:
-                positions_data = json.load(f)
+                raw = json.load(f)
 
-            logger.info(f"✅ Loaded {len(positions_data)} positions from disk")
+            # schema version 解析（向下相容）
+            if isinstance(raw, dict) and 'schema_version' in raw:
+                version = raw['schema_version']
+                positions_data = raw.get('positions', {})
+                if version > 2:
+                    logger.warning(
+                        f"⚠️ positions.json schema_version={version} > expected 2, "
+                        f"attempting to load (may have compatibility issues)"
+                    )
+                logger.info(f"✅ Loaded {len(positions_data)} positions from disk (schema v{version})")
+            else:
+                # v1（無版本號）：raw 就是 positions dict
+                positions_data = raw
+                logger.info(f"✅ Loaded {len(positions_data)} positions from disk (schema v1, legacy)")
+
             return positions_data
 
         except json.JSONDecodeError as e:
