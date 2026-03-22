@@ -4,6 +4,7 @@ Telegram 通知器
 封裝所有 Telegram Bot 推送邏輯，從 v6/core.py 提取。
 """
 
+import html
 import logging
 import requests
 from typing import Dict
@@ -28,7 +29,9 @@ class TelegramNotifier:
                 'text': message,
                 'parse_mode': 'HTML'
             }
-            requests.post(url, data=payload, timeout=10)
+            resp = requests.post(url, data=payload, timeout=10)
+            if not resp.ok:
+                logger.error(f"Telegram 發送失敗: {resp.status_code} {resp.text[:200]}")
         except Exception as e:
             logger.error(f"Telegram 發送失敗: {e}")
 
@@ -51,19 +54,24 @@ class TelegramNotifier:
         emoji = strength_emoji.get(strength, '🚀')
         side = details.get('side', 'LONG')
 
+        esc = html.escape
+        market = esc(str(details.get('market_state', 'N/A')))
+        target = esc(str(details.get('target_ref', 'N/A')))
+        r15 = esc(str(details.get('r15_target', 'N/A')))
+
         msg = f"""
 {emoji} <b>交易信號 - {strength.upper()} ({side})</b>
 {tier_emoji.get(tier, '')} 信號等級: {tier}
 ──────────────────
-幣種: {symbol}
+幣種: {esc(symbol)}
 方向: {side}
-市場狀態: {details.get('market_state', 'N/A')}
+市場狀態: {market}
 量能強度: {details.get('vol_ratio', 0):.2f}x 均量
 入場價: ${details.get('entry_price', 0):.2f}
 止損價: ${details.get('stop_loss', 0):.2f}
-目標位: ${details.get('target_ref', 'N/A')}
+目標位: {target}
 倉位: {details.get('position_size', 0):.6f}
-1.5R: ${details.get('r15_target', 'N/A')}
+1.5R: {r15}
 ──────────────────
         """
         TelegramNotifier.send_message(msg.strip())
@@ -79,15 +87,15 @@ class TelegramNotifier:
         }
         emoji = emoji_map.get(action, '🔔')
 
-        msg = f"{emoji} <b>{action}</b>\n幣種: {symbol}\n價格: ${price:.2f}"
+        msg = f"{emoji} <b>{html.escape(action)}</b>\n幣種: {html.escape(symbol)}\n價格: ${price:.2f}"
         if details:
-            msg += f"\n{details}"
+            msg += f"\n{html.escape(details)}"
         TelegramNotifier.send_message(msg)
 
     @staticmethod
     def notify_warning(message: str):
         """轉發 WARNING/ERROR 級別 log 到 Telegram（有節流）"""
-        msg = f"<b>Bot Alert</b>\n<pre>{message[:500]}</pre>"
+        msg = f"<b>Bot Alert</b>\n<pre>{html.escape(message[:500])}</pre>"
         TelegramNotifier.send_message(msg)
 
     @staticmethod
@@ -100,8 +108,8 @@ class TelegramNotifier:
         size = details.get('position_size', 0)
         emoji = '🟢' if pnl >= 0 else '🔴'
         msg = (
-            f"{emoji} <b>平倉: {symbol} {side}</b>\n"
-            f"原因: {reason}\n"
+            f"{emoji} <b>平倉: {html.escape(symbol)} {html.escape(side)}</b>\n"
+            f"原因: {html.escape(reason)}\n"
             f"入場: ${entry:.2f}\n"
             f"倉位: {size:.6f}\n"
             f"PnL: {pnl:+.2f}%"
