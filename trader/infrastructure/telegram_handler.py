@@ -133,8 +133,8 @@ class TelegramCommandHandler:
             lines.append(
                 f"\n<b>{html.escape(symbol)}</b> {pm.side} ({strategy})\n"
                 f"  入場: ${pm.avg_entry:.4f}\n"
-                f"  止損: ${pm.stop_loss:.4f}\n"
-                f"  倉位: {pm.position_size:.6f}\n"
+                f"  止損: ${pm.current_sl:.4f}\n"
+                f"  倉位: {pm.total_size:.6f}\n"
                 f"  階段: Stage {pm.stage}\n"
                 f"  Tier: {pm.signal_tier}\n"
                 f"  持倉: {hold_hours:.1f}h\n"
