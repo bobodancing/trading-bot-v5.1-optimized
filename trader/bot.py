@@ -28,6 +28,7 @@ import pandas as pd
 # 基礎設施層
 from trader.infrastructure.api_client import BinanceFuturesClient
 from trader.infrastructure.notifier import TelegramNotifier
+from trader.infrastructure.telegram_handler import TelegramCommandHandler
 from trader.infrastructure.data_provider import MarketDataProvider
 from trader.infrastructure.performance_db import PerformanceDB
 # 技術指標層
@@ -104,6 +105,10 @@ class TradingBotV6:
         self.perf_db = PerformanceDB(db_path=db_path)
 
         self._log_startup()
+
+        # Telegram 互動指令
+        self.telegram_handler = TelegramCommandHandler(self)
+        self._start_time = datetime.now(timezone.utc)
 
     def _init_exchange(self):
         """初始化交易所（沿用 V5.3）"""
@@ -1298,7 +1303,7 @@ class TradingBotV6:
                     'realized_r': f'{realized_r:.2f}',
                     'mfe_pct': f'{mfe_pct:.4f}',
                     'mae_pct': f'{mae_pct:.4f}',
-                    'capture_ratio': f'{capture_ratio:.2f}',
+                    'capture_ratio': f'{capture_ratio or 0:.2f}',
                 })
                 return True
 
@@ -1335,7 +1340,7 @@ class TradingBotV6:
                 'realized_r': f'{realized_r:.2f}',
                 'mfe_pct': f'{mfe_pct:.4f}',
                 'mae_pct': f'{mae_pct:.4f}',
-                'capture_ratio': f'{capture_ratio:.2f}',
+                'capture_ratio': f'{capture_ratio or 0:.2f}',
             })
 
             # === Phase 0: 寫入績效 DB ===
@@ -1664,6 +1669,7 @@ class TradingBotV6:
                 self.scan_for_signals()
                 self._sync_exchange_positions()  # 每 cycle 都執行，active_trades 為空時也偵測幽靈倉位
                 self.monitor_positions()
+                self.telegram_handler.poll()
 
                 logger.debug(f"休息 {Config.CHECK_INTERVAL} 秒...\n")
                 time.sleep(Config.CHECK_INTERVAL)
@@ -1725,6 +1731,11 @@ if __name__ == "__main__":
 
     # WARNING/ERROR 轉發到 Telegram（節流：同訊息 5 分鐘內不重複發送）
     class _TelegramLogHandler(logging.Handler):
+        # 不轉發到 Telegram 的訊息（含以下字串即略過）
+        _IGNORE_PATTERNS = [
+            "Scanner JSON 中 hot_symbols 為空",
+        ]
+
         def __init__(self):
             super().__init__(level=logging.WARNING)
             self._last_sent = {}  # message_key -> timestamp
@@ -1732,6 +1743,8 @@ if __name__ == "__main__":
         def emit(self, record):
             try:
                 msg = self.format(record)
+                if any(p in msg for p in self._IGNORE_PATTERNS):
+                    return
                 # 節流：取前 80 字元作 key，5 分鐘內同 key 不重複
                 key = msg[:80]
                 now = time.time()
