@@ -55,14 +55,26 @@ class TelegramNotifier:
         side = details.get('side', 'LONG')
 
         esc = html.escape
-        market = esc(str(details.get('market_state', 'N/A')))
+        market = esc(str(details.get('market_regime', 'N/A')))
         target = esc(str(details.get('target_ref', 'N/A')))
-        r15 = esc(str(details.get('r15_target', 'N/A')))
+
+        entry = details.get('entry_price', 0)
+        stop = details.get('stop_loss', 0)
+        risk = abs(entry - stop)
+        side_val = details.get('side', 'LONG')
+        if risk > 0:
+            r15_val = entry + 1.5 * risk if side_val == 'LONG' else entry - 1.5 * risk
+            r15 = f"${r15_val:.2f}"
+        else:
+            r15 = "N/A"
+
+        strategy = 'V6 Pyramid' if details.get('is_v6') else 'V53 SOP'
 
         msg = f"""
 {emoji} <b>交易信號 - {strength.upper()} ({side})</b>
 {tier_emoji.get(tier, '')} 信號等級: {tier}
 ──────────────────
+策略: {strategy}
 幣種: {esc(symbol)}
 方向: {side}
 市場狀態: {market}

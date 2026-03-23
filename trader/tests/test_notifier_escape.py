@@ -43,13 +43,13 @@ class TestNotifierEscape:
             'signal_strength': 'strong',
             'signal_tier': 'A',
             'side': 'LONG',
-            'market_state': 'trend<up>',
+            'market_regime': 'trend<up>',
             'vol_ratio': 1.5,
             'entry_price': 100.0,
             'stop_loss': 95.0,
             'target_ref': '$110&more',
             'position_size': 0.01,
-            'r15_target': 'N/A',
+            'is_v6': True,
         }
         TelegramNotifier.notify_signal('<TEST>', details)
         payload = mock_post.call_args.kwargs.get('data', {})
@@ -57,6 +57,10 @@ class TestNotifierEscape:
         assert '&lt;TEST&gt;' in text
         assert 'trend&lt;up&gt;' in text
         assert '$110&amp;more' in text
+        # 1.5R 自算: entry=100, stop=95, risk=5, 1.5R = 107.5
+        assert '$107.50' in text
+        # 策略名稱
+        assert 'V6 Pyramid' in text
 
     @patch('trader.infrastructure.notifier.requests.post')
     def test_notify_exit_escapes_reason(self, mock_post):
