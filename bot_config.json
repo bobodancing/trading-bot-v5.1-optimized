@@ -65,6 +65,8 @@
     "v6_4h_ema20_force_exit": false,
     "v6_reverse_2b_exit": true,
     "v6_stage1_max_hours": 36,
+    "v7_stage1_max_hours": 36,
+    "v7_stage_volume_mult": 1.0,
     "early_stop_r_threshold": 0.75,
     "profit_pullback_threshold": 0.55,
     "early_exit_cooldown_hours": 10,

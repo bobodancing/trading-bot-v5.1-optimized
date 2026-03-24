@@ -207,6 +207,10 @@ class ConfigV6:
     STAGE1_MAX_HOURS = 24        # V5.3 路徑
     V6_STAGE1_MAX_HOURS = 36    # V6 滾倉路徑
 
+    # ==================== V7 結構加倉系統 ====================
+    V7_STAGE1_MAX_HOURS = 36       # V7 Stage 1 超時（小時）
+    V7_STAGE_VOLUME_MULT = 1.0    # 加倉量能門檻（volume / vol_ma）
+
     # 快速止損/時間退出後的冷卻時間
     EARLY_EXIT_COOLDOWN_HOURS = 10
 
@@ -234,9 +238,10 @@ class ConfigV6:
 
     # Signal → Strategy 映射（新增策略只需在此加一行 + register class）
     SIGNAL_STRATEGY_MAP: dict = {
-        "2B": "v6_pyramid",
+        "2B": "v7_structure",         # was "v6_pyramid" — V6 deprecated
         "EMA_PULLBACK": "v53_sop",
         "VOLUME_BREAKOUT": "v53_sop",
+        "2B_V7": "v7_structure",
     }
 
     # Debug & 日誌
