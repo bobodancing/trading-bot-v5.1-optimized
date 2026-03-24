@@ -1397,6 +1397,7 @@ class TradingBotV6:
                 "mtf_aligned":     int(pm.mtf_aligned) if getattr(pm, 'mtf_aligned', None) is not None else None,
                 "volume_grade":    getattr(pm, 'volume_grade', None),
                 "tier_score":      getattr(pm, 'tier_score', None),
+                "strategy_name":   pm.strategy_name,
             })
 
             # Telegram

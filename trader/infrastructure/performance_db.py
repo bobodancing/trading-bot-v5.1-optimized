@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS trades (
     mtf_aligned          INTEGER,
     volume_grade         TEXT,
     tier_score           INTEGER,
+    strategy_name        TEXT,
     created_at       TEXT    DEFAULT (datetime('now'))
 );
 """
@@ -59,7 +60,8 @@ INSERT OR IGNORE INTO trades (
     entry_adx, fakeout_depth_atr, reverse_2b_depth_atr,
     original_size, partial_pnl_usdt,
     btc_trend_aligned,
-    trend_adx, mtf_aligned, volume_grade, tier_score
+    trend_adx, mtf_aligned, volume_grade, tier_score,
+    strategy_name
 ) VALUES (
     :trade_id, :symbol, :side, :is_v6_pyramid, :signal_tier,
     :entry_price, :exit_price, :total_size, :initial_r,
@@ -70,7 +72,8 @@ INSERT OR IGNORE INTO trades (
     :entry_adx, :fakeout_depth_atr, :reverse_2b_depth_atr,
     :original_size, :partial_pnl_usdt,
     :btc_trend_aligned,
-    :trend_adx, :mtf_aligned, :volume_grade, :tier_score
+    :trend_adx, :mtf_aligned, :volume_grade, :tier_score,
+    :strategy_name
 );
 """
 
@@ -96,6 +99,7 @@ class PerformanceDB:
                     "ALTER TABLE trades ADD COLUMN mtf_aligned INTEGER",
                     "ALTER TABLE trades ADD COLUMN volume_grade TEXT",
                     "ALTER TABLE trades ADD COLUMN tier_score INTEGER",
+                    "ALTER TABLE trades ADD COLUMN strategy_name TEXT",
                 ]:
                     try:
                         conn.execute(col_sql)
@@ -122,6 +126,7 @@ class PerformanceDB:
             data.setdefault('mtf_aligned', None)
             data.setdefault('volume_grade', None)
             data.setdefault('tier_score', None)
+            data.setdefault('strategy_name', None)
             with sqlite3.connect(self.db_path) as conn:
                 conn.execute(INSERT_SQL, data)
                 conn.commit()
