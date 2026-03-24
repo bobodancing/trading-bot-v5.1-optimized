@@ -1,7 +1,10 @@
 """
-V7 P2: V6.0 滾倉策略實作
+[DEPRECATED] V6.0 滾倉策略 — 已被 V7 StructureStrategy 取代
 
-邏輯完整搬移自 positions.py _get_exit_decision() V6 路徑：
+保留原因：既有 V6 持倉仍需此策略正常運行直到平倉。
+新進場一律走 V7（SIGNAL_STRATEGY_MAP["2B"] = "v7_structure"）。
+
+原始邏輯：
 - 三段式動態防守（Tier 1 保本 / Tier 2 加速追蹤 / Tier 3 標準追蹤）
 - Stage 1 超時退出（TIME_EXIT）
 - 4H EMA20 強制平倉（4H_EMA20_FORCE）

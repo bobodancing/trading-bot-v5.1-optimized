@@ -2,9 +2,9 @@
 V6.0 主引擎 — 終極滾倉版
 
 基於 V5.3 TradingBotV53 重構：
-- 2B 信號 → V6.0 滾倉（PositionManager, is_v6_pyramid=True）
+- 2B 信號 → V7 結構加倉（V7StructureStrategy, 三段 swing-based 加倉）
 - EMA Pullback / Volume Breakout → V5.3 SOP（PositionManager, is_v6_pyramid=False）
-- Monitor loop 新增 4H data + Stage 2/3 trigger
+- [DEPRECATED] V6.0 滾倉仍保留供既有持倉平倉
 - positions.json 持久化
 """
 
@@ -885,9 +885,9 @@ class TradingBotV6:
                 if not df_1h.empty:
                     df_1h = TechnicalAnalysis.calculate_indicators(df_1h)
 
-                # V6.0: 額外取得 4H 數據（用於 EMA20 force exit）
+                # V6 / V7: 額外取得 4H 數據
                 df_4h = None
-                if pm.strategy_name == "v6_pyramid":
+                if pm.strategy_name in ("v6_pyramid", "v7_structure"):
                     df_4h = self.fetch_ohlcv(symbol, '4h', limit=50)
                     if df_4h is not None and not df_4h.empty:
                         df_4h = TechnicalAnalysis.calculate_indicators(df_4h)
