@@ -584,6 +584,19 @@ class TradingBotV6:
             pm.symbol, pm.side, pm.total_size, new_sl
         )
 
+    def _calc_total_risk_pct(self, balance: float) -> float:
+        """計算所有活躍持倉的總風險佔比"""
+        if balance <= 0:
+            return 0.0
+        total_risk = 0.0
+        for p in self.active_trades.values():
+            if p.is_closed:
+                continue
+            sl_dist_pct = abs(p.avg_entry - p.current_sl) / p.avg_entry if p.avg_entry > 0 else 0
+            position_risk = sl_dist_pct * p.total_size * p.avg_entry
+            total_risk += position_risk
+        return total_risk / balance
+
     @staticmethod
     def _get_close_side(side: str) -> str:
         """Return exchange order side for closing a position."""
@@ -907,9 +920,9 @@ class TradingBotV6:
                 elif action == Action.ADD:
                     stage = decision.get('add_stage', 2)
                     if stage == 2:
-                        self._handle_stage2(pm, current_price, df_1h)
+                        self._handle_stage2(pm, current_price, df_1h, decision=decision)
                     else:
-                        self._handle_stage3(pm, current_price, df_1h)
+                        self._handle_stage3(pm, current_price, df_1h, decision=decision)
                     state_changed = True
 
                 elif action == Action.PARTIAL_CLOSE:
@@ -926,7 +939,12 @@ class TradingBotV6:
                 else:
                     profit_pct = (pm.avg_entry - current_price) / pm.avg_entry * 100
 
-                mode = f"V6/S{pm.stage}" if pm.strategy_name == "v6_pyramid" else "V53"
+                if pm.strategy_name == "v7_structure":
+                    mode = f"V7/S{pm.stage}"
+                elif pm.strategy_name == "v6_pyramid":
+                    mode = f"V6/S{pm.stage}"
+                else:
+                    mode = "V53"
                 logger.debug(
                     f"{symbol} [{mode}]: ${current_price:.2f} | "
                     f"PnL={profit_pct:+.2f}% | SL=${pm.current_sl:.2f}"
@@ -1396,11 +1414,37 @@ class TradingBotV6:
             logger.error(f"{pm.symbol} _handle_close 發生意外錯誤: {e}")
             return False
 
-    def _handle_stage2(self, pm: PositionManager, current_price: float, df_1h):
+    def _handle_stage2(self, pm: PositionManager, current_price: float, df_1h, decision: dict = None):
         """處理 Stage 2 加倉"""
         try:
             entry_price = current_price
-            add_size = pm.calculate_stage2_size(entry_price)
+
+            # V7: 用策略的 calculate_add_size + decision 中的 new_sl
+            if pm.strategy_name == 'v7_structure':
+                from trader.strategies.v7_structure import V7StructureStrategy
+                new_sl = decision.get('new_sl') if decision else None
+                if new_sl is None:
+                    logger.error(f"{pm.symbol} V7 Stage 2: decision 缺少 new_sl")
+                    return
+
+                if Config.V6_DRY_RUN:
+                    balance = 10000.0
+                else:
+                    balance = self.risk_manager.get_balance()
+
+                total_risk_pct = self._calc_total_risk_pct(balance)
+
+                add_size = V7StructureStrategy.calculate_add_size(
+                    balance=balance,
+                    risk_per_trade=Config.RISK_PER_TRADE,
+                    entry_price=entry_price,
+                    new_sl=new_sl,
+                    max_position_percent=Config.MAX_POSITION_PERCENT,
+                    max_total_risk=Config.MAX_TOTAL_RISK,
+                    current_total_risk_pct=total_risk_pct,
+                )
+            else:
+                add_size = pm.calculate_stage2_size(entry_price)
 
             if add_size <= 0:
                 logger.warning(f"{pm.symbol} 階段2 倉位=0，跳過")
@@ -1416,6 +1460,9 @@ class TradingBotV6:
                     f"[模擬] {pm.symbol} 階段2 加倉: +{add_size:.6f} @ ${entry_price:.2f}"
                 )
                 pm.add_stage2(entry_price, add_size)
+                # V7: override SL to structural swing point
+                if pm.strategy_name == 'v7_structure' and decision and decision.get('new_sl'):
+                    pm.current_sl = decision['new_sl']
                 return
 
             # 下單
@@ -1431,6 +1478,9 @@ class TradingBotV6:
 
             # 更新 PM
             pm.add_stage2(fill_price, add_size)
+            # V7: override SL to structural swing point
+            if pm.strategy_name == 'v7_structure' and decision and decision.get('new_sl'):
+                pm.current_sl = decision['new_sl']
 
             # 更新硬止損（Stage 2 移損至保本）
             self._refresh_stop_loss(pm, pm.current_sl)
@@ -1444,7 +1494,8 @@ class TradingBotV6:
                 f"總倉位={pm.total_size:.6f} | 止損=${pm.current_sl:.2f}（保本）"
             )
             TelegramNotifier.notify_action(
-                pm.symbol, '1.5R移損',
+                pm.symbol,
+                'V7加倉' if pm.strategy_name == 'v7_structure' else '1.5R移損',
                 fill_price,
                 f"Stage2 加倉 +{add_size:.6f} 總={pm.total_size:.6f} SL=${pm.current_sl:.2f}"
             )
@@ -1452,38 +1503,62 @@ class TradingBotV6:
         except Exception as e:
             logger.error(f"{pm.symbol} 階段2 加倉失敗: {e}")
 
-    def _handle_stage3(self, pm: PositionManager, current_price: float, df_1h):
+    def _handle_stage3(self, pm: PositionManager, current_price: float, df_1h, decision: dict = None):
         """處理 Stage 3 加倉"""
         try:
-            from trader.structure import StructureAnalysis
-
             entry_price = current_price
 
-            # 找最近的 confirmed swing point 作為止損
-            if df_1h is not None and not df_1h.empty:
-                if pm.side == 'LONG':
-                    swing_price = StructureAnalysis.find_latest_confirmed_swing(
-                        df_1h, 'low', Config.SWING_LEFT_BARS, Config.SWING_RIGHT_BARS
-                    )
+            # V7: 用策略的 calculate_add_size + decision 中的 new_sl
+            if pm.strategy_name == 'v7_structure':
+                from trader.strategies.v7_structure import V7StructureStrategy
+                new_sl = decision.get('new_sl') if decision else None
+                if new_sl is None:
+                    logger.error(f"{pm.symbol} V7 Stage 3: decision 缺少 new_sl")
+                    return
+
+                if Config.V6_DRY_RUN:
+                    balance = 10000.0
                 else:
-                    swing_price = StructureAnalysis.find_latest_confirmed_swing(
-                        df_1h, 'high', Config.SWING_LEFT_BARS, Config.SWING_RIGHT_BARS
-                    )
+                    balance = self.risk_manager.get_balance()
+
+                total_risk_pct = self._calc_total_risk_pct(balance)
+
+                add_size = V7StructureStrategy.calculate_add_size(
+                    balance=balance,
+                    risk_per_trade=Config.RISK_PER_TRADE,
+                    entry_price=entry_price,
+                    new_sl=new_sl,
+                    max_position_percent=Config.MAX_POSITION_PERCENT,
+                    max_total_risk=Config.MAX_TOTAL_RISK,
+                    current_total_risk_pct=total_risk_pct,
+                )
+                swing_stop = new_sl  # V7: new_sl 就是 swing-based SL
             else:
-                swing_price = None
+                from trader.structure import StructureAnalysis
 
-            if swing_price is None:
-                logger.warning(f"{pm.symbol} 階段3: 找不到 swing point 作止損，跳過")
-                return
+                if df_1h is not None and not df_1h.empty:
+                    if pm.side == 'LONG':
+                        swing_price = StructureAnalysis.find_latest_confirmed_swing(
+                            df_1h, 'low', Config.SWING_LEFT_BARS, Config.SWING_RIGHT_BARS
+                        )
+                    else:
+                        swing_price = StructureAnalysis.find_latest_confirmed_swing(
+                            df_1h, 'high', Config.SWING_LEFT_BARS, Config.SWING_RIGHT_BARS
+                        )
+                else:
+                    swing_price = None
 
-            # 計算 swing stop（+/- 0.5 ATR buffer）
-            atr_buffer = pm.atr * Config.SL_ATR_BUFFER if pm.atr else 0
-            if pm.side == 'LONG':
-                swing_stop = swing_price - atr_buffer
-            else:
-                swing_stop = swing_price + atr_buffer
+                if swing_price is None:
+                    logger.warning(f"{pm.symbol} 階段3: 找不到 swing point 作止損，跳過")
+                    return
 
-            add_size = pm.calculate_stage3_size(entry_price, swing_stop)
+                atr_buffer = pm.atr * Config.SL_ATR_BUFFER if pm.atr else 0
+                if pm.side == 'LONG':
+                    swing_stop = swing_price - atr_buffer
+                else:
+                    swing_stop = swing_price + atr_buffer
+
+                add_size = pm.calculate_stage3_size(entry_price, swing_stop)
             if add_size <= 0:
                 logger.warning(f"{pm.symbol} 階段3 倉位=0，跳過")
                 return

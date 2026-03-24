@@ -379,3 +379,80 @@ class TestV7Registration:
         from trader.strategies.v7_structure import V7StructureStrategy
         s = StrategyFactory.create_strategy("V7")
         assert isinstance(s, V7StructureStrategy)
+
+
+class TestV7Integration:
+    """V7 full lifecycle + calculate_add_size integration"""
+
+    @patch('trader.strategies.v7_structure._apply_common_pre', return_value=None)
+    def test_full_cycle_long(self, mock_pre):
+        """LONG: Stage 1 HOLD -> ADD Stage 2 -> ADD Stage 3 -> no more adds"""
+        from trader.strategies.v7_structure import V7StructureStrategy
+        strategy = V7StructureStrategy()
+
+        # Stage 1: HOLD (no swing structure yet)
+        pm = make_pm(side='LONG', entry_price=100.0, stop_loss=88.0, stage=1, atr=2.0)
+        df_hold = make_df([(100, 102, 98, 101, 80, 100, 2.0)] * 10)
+        decision = strategy.get_decision(pm, 101.0, df_hold)
+        assert decision['action'] == Action.HOLD
+
+        # Stage 1 -> 2: HL formed
+        df_add = _make_swing_df_long_hl()
+        decision = strategy.get_decision(pm, 102.0, df_add)
+        assert decision['action'] == Action.ADD
+        assert decision['add_stage'] == 2
+        assert decision['new_sl'] is not None
+
+        # Simulate stage transition
+        pm.stage = 2
+        pm.current_sl = decision['new_sl']
+
+        # Stage 2 -> 3 (may or may not trigger depending on swing state)
+        decision = strategy.get_decision(pm, 105.0, df_add)
+        if decision['action'] == Action.ADD:
+            assert decision['add_stage'] == 3
+            pm.stage = 3
+            pm.current_sl = decision['new_sl']
+
+        # Stage 3: no more adds
+        pm.stage = 3
+        decision = strategy.get_decision(pm, 108.0, df_add)
+        assert decision['action'] in (Action.UPDATE_SL, Action.HOLD)
+
+        # State persistence
+        state = strategy.get_state()
+        assert state['last_structure_swing'] is not None
+        assert len(state['add_trigger_swings']) >= 1
+
+    def test_add_size_within_total_risk(self):
+        """三段加倉後 total risk 不超過 max_total_risk"""
+        from trader.strategies.v7_structure import V7StructureStrategy
+
+        balance = 10000.0
+        risk_per_trade = 0.017
+        max_total_risk = 0.0642
+
+        s1_size = V7StructureStrategy.calculate_add_size(
+            balance=balance, risk_per_trade=risk_per_trade,
+            entry_price=100.0, new_sl=95.0,
+            max_total_risk=max_total_risk, current_total_risk_pct=0.0,
+        )
+        s1_risk_pct = abs(100.0 - 95.0) / 100.0 * s1_size * 100.0 / balance
+
+        s2_size = V7StructureStrategy.calculate_add_size(
+            balance=balance, risk_per_trade=risk_per_trade,
+            entry_price=105.0, new_sl=98.0,
+            max_total_risk=max_total_risk, current_total_risk_pct=s1_risk_pct,
+        )
+        s2_risk_pct = abs(105.0 - 98.0) / 105.0 * s2_size * 105.0 / balance
+
+        s3_size = V7StructureStrategy.calculate_add_size(
+            balance=balance, risk_per_trade=risk_per_trade,
+            entry_price=110.0, new_sl=103.0,
+            max_total_risk=max_total_risk, current_total_risk_pct=s1_risk_pct + s2_risk_pct,
+        )
+        s3_risk_pct = abs(110.0 - 103.0) / 110.0 * s3_size * 110.0 / balance
+
+        total_risk = s1_risk_pct + s2_risk_pct + s3_risk_pct
+        assert total_risk <= max_total_risk + 0.001, f"Total risk {total_risk:.4f} > {max_total_risk}"
+        assert s1_size > 0 and s2_size > 0 and s3_size > 0
