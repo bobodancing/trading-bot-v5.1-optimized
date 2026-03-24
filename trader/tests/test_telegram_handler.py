@@ -39,8 +39,8 @@ class TestTelegramCommands:
         pm.side = 'LONG'
         pm.is_v6_pyramid = True
         pm.avg_entry = 100.0
-        pm.stop_loss = 95.0
-        pm.position_size = 0.5
+        pm.current_sl = 95.0
+        pm.total_size = 0.5
         pm.stage = 2
         pm.signal_tier = 'A'
         pm.entry_time = datetime.now(timezone.utc) - timedelta(hours=3)
