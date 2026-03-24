@@ -2,7 +2,7 @@
 
 基於 Swing Point 結構分析的加密貨幣期貨交易平台，支援策略拔插（Plugin Architecture）。
 
-> 最後更新：2026-03-20 | 281 tests passed
+> 最後更新：2026-03-24 | 348 tests passed
 
 ## 目錄
 
@@ -28,8 +28,9 @@
 
 | 策略 | 進場信號 | 持倉管理 |
 |------|----------|----------|
-| **V6 Pyramid** | 2B Swing Pivot Breakout | 三階段滾倉（Stage 1→2→3）+ 三段式動態防守出場 |
-| **V53 SOP** | 2B Breakout | 1.0R / 1.5R / 2.0R 分批減倉 |
+| **V7 Structure** | 2B Swing Pivot Breakout | 三段結構加倉（Swing-based SL 棘輪）+ 反向 2B + 超時退出 |
+| **V53 SOP** | EMA Pullback / Volume Breakout | 1.0R / 1.5R / 2.0R 分批減倉 |
+| ~~V6 Pyramid~~ | ~~2B~~ | ~~deprecated，既有倉位仍可運行~~ |
 
 **新增策略**只需：寫 class → `StrategyFactory.register()` → config 映射，不動 bot.py。
 
@@ -56,8 +57,9 @@ trading_bot/
 │   │
 │   ├── strategies/              # 策略插件層（Registry Pattern）
 │   │   ├── base.py              # Action enum + DecisionDict + TradingStrategy ABC + StrategyFactory
-│   │   ├── v6_pyramid.py        # V6 滾倉出場（結構追蹤 / profit_pullback / 反向 2B）
-│   │   └── v53_sop.py           # V5.3 SOP 出場（1.0R/1.5R/2.0R 減倉）
+│   │   ├── v7_structure.py      # V7 結構加倉（Swing-based 三段加倉 + 反向 2B + 超時）
+│   │   ├── v53_sop.py           # V5.3 SOP 出場（1.0R/1.5R/2.0R 減倉）
+│   │   └── v6_pyramid.py        # [deprecated] V6 滾倉（既有倉位保留）
 │   │
 │   ├── infrastructure/          # 基礎設施
 │   │   ├── api_client.py        # BinanceFuturesClient（HMAC + rate limit）
@@ -74,7 +76,7 @@ trading_bot/
 │   ├── execution/
 │   │   └── order_engine.py      # OrderExecutionEngine（下單 / 止損 / 平倉）
 │   │
-│   └── tests/                   # 281 tests
+│   └── tests/                   # 348 tests
 │       ├── conftest.py
 │       ├── test_integration.py  # StatefulMockEngine + FaultInjector
 │       └── test_*.py            # 28 test modules
@@ -196,8 +198,9 @@ class TradingStrategy(ABC):
     def load_state(self, state: dict): ... # state 還原
 
 # Registry — 新策略只需 register
-StrategyFactory.register("v6_pyramid", V6PyramidStrategy)
+StrategyFactory.register("v7_structure", V7StructureStrategy)
 StrategyFactory.register("v53_sop", V53SopStrategy)
+StrategyFactory.register("v6_pyramid", V6PyramidStrategy)  # deprecated
 # StrategyFactory.register("grid", GridStrategy)  # 未來擴充
 ```
 
@@ -205,7 +208,7 @@ bot.py 通過 `SIGNAL_STRATEGY_MAP` config 將信號類型映射到策略：
 
 ```python
 SIGNAL_STRATEGY_MAP = {
-    "2B": "v6_pyramid",
+    "2B": "v7_structure",       # V7 結構加倉（新）
     "EMA_PULLBACK": "v53_sop",
     "VOLUME_BREAKOUT": "v53_sop",
 }
@@ -215,7 +218,7 @@ SIGNAL_STRATEGY_MAP = {
 
 ## 策略系統
 
-### V6 Pyramid（三階段滾倉）
+### V7 Structure（結構驅動三段加倉）
 
 #### 信號偵測
 
@@ -224,23 +227,21 @@ SIGNAL_STRATEGY_MAP = {
 - **Bullish 2B**：價格跌破 confirmed swing low 後放量收回
 - **Bearish 2B**：價格突破 confirmed swing high 後放量收回
 
-#### 三階段滾倉
+#### 三段結構加倉
 
 | Stage | 觸發 | 倉位 | 止損 |
 |-------|------|------|------|
-| 1 — 試單 | 2B 信號 | equity × 20% × 33% | swing point ± 0.5 ATR |
-| 2 — Neckline 突破 | 收盤破 neckline + 量 ≥ 1.2x | equity × 20% × 37% | 移至保本（Stage 1 入場價） |
-| 3 — EMA 回測 | 前根觸 EMA20 + 縮量 + 反轉 | equity × 20% × 30% | 移至 swing point（risk-free） |
+| 1 — 建倉 | 2B 信號 | `risk_per_trade` (1.7%) | swing point ± ATR buffer |
+| 2 — 第一加倉 | Lower High（SHORT）/ Higher Low（LONG）+ 順勢K + 量能 | `risk_per_trade` (1.7%) | 新 swing point |
+| 3 — 第二加倉 | 再次結構確認 | `risk_per_trade` (1.7%) | 最新 swing point |
 
-核心原則：**三次加倉，總風險始終 ≤ initial_R**
+加倉三條件 AND：**Swing Point 確認 + 順勢K（body/range ≥ 0.3）+ 量能（≥ vol_ma）**
 
-#### 出場機制（Three-Tier Defense）
+#### 出場機制
 
-1. **Tier 1 — 保本移損**：MFE ≥ 1.5R → SL 移至 entry + 0.1R（棘輪，只做一次）
-2. **Tier 2 — 加速結構追蹤**：Stage 1 用 HL/LH（right=2, 無需 BOS）
-3. **Tier 3 — 標準結構追蹤**：Stage 2+ 用 Temporal BOS（left=7, right=3）+ 4H EMA20
-4. **反向 2B**：雙根確認（穿透 + 收回 + 深度 ≥ 0.3 ATR + 下根確認）
-5. **Stage 1 超時**：36h 未升級 → 平倉
+1. **結構 Trailing SL**：棘輪追蹤最新 swing point（只往有利方向移動）
+2. **反向 2B**：穿透深度 ≥ 0.3 ATR + 下根確認 → 全平
+3. **Stage 1 超時**：36h 未觸發加倉 → 平倉釋放資金
 
 ### V53 SOP（分批減倉）
 
@@ -250,6 +251,12 @@ SIGNAL_STRATEGY_MAP = {
 | 1.5R | 獲利達 1.5R | 減倉 30%，移損至 +1.0R，啟動 ATR trailing |
 | 2.0R | 獲利達 2.0R | 減倉 30%，移損至 +1.5R |
 | Structure Break | 連續 2 根收破 swing | 全平 |
+
+### V6 Pyramid（已廢棄，歷史參考）
+
+既有 V6 持倉仍可正常平倉，新進場不再使用。
+
+---
 
 ### 風控 Guard（Risk Guard V1）
 
@@ -281,25 +288,24 @@ SIGNAL_STRATEGY_MAP = {
 ### 倉位計算
 
 ```
-V6:  size = equity × EQUITY_CAP(20%) × stage_ratio × tier_mult
+V7:  每段 = balance × risk_per_trade / sl_distance_pct（每次加倉獨立計算）
 V53: size = risk_amount / stop_distance，上限 equity × V53_CAP(10%) × leverage
 ```
 
 ### Tier 系統
 
-| Tier | 倍率 | V6 Stage 1 equity% |
-|------|------|---------------------|
-| A | 1.0x | ~6.6% |
-| B | 0.7x | ~4.6% |
-| C | 0.5x | ~3.3% |
+| Tier | 倍率 | 影響 |
+|------|------|------|
+| A | 1.0x | 全額進場 |
+| B | 0.7x | 縮小倉位 |
+| C | 0.5x | 最小倉位 |
 
 ### 風險上限
 
 | 參數 | 值 |
 |------|------|
-| `RISK_PER_TRADE` | 1.7% |
-| `MAX_TOTAL_RISK` | 5% |
-| `EQUITY_CAP_PERCENT` | 20%（V6 三段合計） |
+| `RISK_PER_TRADE` | 1.7%（V7 每段加倉） |
+| `MAX_TOTAL_RISK` | 6.42%（三段合計上限） |
 | `V53_EQUITY_CAP_PERCENT` | 10% |
 | `MAX_POSITIONS_PER_GROUP` | 6 |
 | `LEVERAGE` | 3x |
@@ -331,8 +337,8 @@ JSON key 自動映射大寫（`risk_per_trade` → `RISK_PER_TRADE`）。
 
 ```python
 SIGNAL_STRATEGY_MAP = {
-    "2B": "v6_pyramid",
-    "EMA_PULLBACK": "v53_sop",
+    "2B": "v7_structure",       # 結構加倉
+    "EMA_PULLBACK": "v53_sop",  # 分批減倉
     "VOLUME_BREAKOUT": "v53_sop",
 }
 ```
@@ -372,31 +378,28 @@ SIGNAL_STRATEGY_MAP = {
 
 ## 測試
 
-281 個 pytest，全部通過。
+348 個 pytest，全部通過。
 
 ```bash
 python3 -m pytest trader/tests/ -v
-python3 -m pytest trader/tests/test_signals.py -v  # 單一模組
+python3 -m pytest trader/tests/test_v7_structure.py -v  # V7 單一模組
 ```
 
 ### 測試覆蓋
 
 | 模組 | 數量 | 覆蓋 |
 |------|------|------|
+| `test_v7_structure.py` | 28 | V7 加倉觸發 / SL 棘輪 / 反向 2B / 超時 / sizing |
 | `test_structure.py` | 9 | Swing Point / Neckline |
 | `test_signals.py` | 13 | 2B Bullish/Bearish / 穿透過濾 |
 | `test_risk.py` | 13 | Stage sizing / risk cap |
 | `test_persistence.py` | 30 | Atomic write / 出場決策 16 場景 |
 | `test_integration.py` | 18 | StatefulMockEngine + FaultInjector |
 | `test_risk_guard.py` | 16 | BTC Filter / SL Cap / Cooldown |
-| `test_v7p2.py` | 16 | Strategy dispatch V6/V53 |
+| `test_v7p2.py` | 16 | Strategy dispatch |
 | `test_tier_equity_balance.py` | 13 | Tier mult / equity cap |
-| `test_signals.py` | 13 | 2B detection / volume grade |
 | `test_reverse_2b_exit.py` | 9 | 穿透深度 + 雙根確認 |
-| `test_structure_trailing_bos.py` | 9 | BOS 驗證 |
-| `test_stage2_neckline.py` | 9 | Neckline 距離最近 |
-| `test_v53_structure_break_nbar.py` | 9 | N-bar 確認 |
-| 其他 14 個模組 | 82 | 各子系統 |
+| 其他 16 個模組 | 183 | 各子系統 |
 
 ---
 
@@ -409,7 +412,7 @@ python3 -m pytest trader/tests/test_signals.py -v  # 單一模組
 | 指標 | pandas-ta（EMA / ATR / ADX / RSI） |
 | 數據 | pandas + numpy |
 | 通知 | Telegram Bot API |
-| 測試 | pytest（281 tests） |
+| 測試 | pytest（348 tests） |
 | 持久化 | JSON (atomic write) + SQLite (performance + scanner) |
 
 ---

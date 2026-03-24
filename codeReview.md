@@ -1,6 +1,6 @@
 # Trading Bot — Code Review & Roadmap
 
-> 小波 | 初版 2026-02-17 | 更新 2026-03-21
+> 小波 | 初版 2026-02-17 | 更新 2026-03-24
 > 架構參考：`project_structure_map_v3.md`
 
 ---
@@ -11,18 +11,18 @@
 
 ---
 
-## 整體評價：7.7 / 10（2026-03-21 嚴格重評，待修 #6/#10/#12 修復後微升）
+## 整體評價：8.0 / 10（2026-03-24 更新，V7 上線）
 
 | 維度 | 原分 | 前次 | 現分 | 扣分原因 |
 |------|------|------|------|---------|
 | 架構設計 | 8 | 9.5 | **8.5** | bot.py 仍是 monolith（Phase 3 未做）+ Config global state（待修 #4） |
-| 策略邏輯 | 8.5 | 8.5 | **7.0** | V6 存廢未定（Stage 2 到達率 8.6%）+ Three-Tier Defense 未經驗證 |
-| 測試覆蓋 | 5 | 8.5 | **7.5** | 無 coverage %、無 E2E test（Scanner pytest ✅ 待修 #6 已修） |
+| 策略邏輯 | 8.5 | 7.0 | **8.0** | V7 結構加倉上線，V6 軟廢棄。待 Testnet 驗證加倉觸發率 |
+| 測試覆蓋 | 5 | 8.5 | **7.5** | 無 coverage %、無 E2E test |
 | 錯誤處理 | 6.5 | 8.0 | **7.0** | API client error 不一致（待修 #11）+ 無滑價保護（待修 #9） |
-| 可維護性 | 6 | 9.0 | **8.0** | monolith 未拆（magic numbers ✅ #10 已修 + schema version ✅ #12 已修） |
-| 文件品質 | 9 | 9.0 | **8.0** | 無 operational runbook、無 ADR（決策脈絡只在對話紀錄） |
+| 可維護性 | 6 | 9.0 | **8.0** | monolith 未拆 |
+| 文件品質 | 9 | 9.0 | **8.0** | 無 operational runbook、無 ADR |
 
-> **7.5 = 堅實的個人專案，但還不是 production-grade 交易系統。** 待修問題修完 + 4/3 驗證通過 → 8.0~8.5 合理回升空間。
+> **8.0 = 結構清晰、策略完整的個人量化系統。** V7 Testnet 驗證通過 + 待修問題修完 → 8.5 合理。
 
 ---
 
@@ -103,6 +103,16 @@
 - [x] SL Distance Cap（> 6% → 跳過）
 - [x] Symbol Loss Cooldown（虧損後 24h 冷卻）
 
+### V7 結構加倉策略（2026-03-24，S1+S2+S3）
+
+- [x] `v7_structure.py`：三條件 AND 加倉（Swing Point + 順勢K body/range≥0.3 + 量能）
+- [x] SL 棘輪（只往有利方向）+ 結構 Trailing SL
+- [x] 反向 2B 全平 + Stage 1 超時退出
+- [x] `calculate_add_size()` static method（risk_per_trade 獨立計算，每段 1.7%）
+- [x] bot.py `_handle_stage2/3` V7 分支 + `_calc_total_risk_pct()` helper
+- [x] V6 軟廢棄（`SIGNAL_STRATEGY_MAP["2B"] = "v7_structure"`，代碼保留）
+- [x] 348 tests passed ✅
+
 ### V6 Three-Tier Defense（2026-03-20）
 
 - [x] **移除 profit_pullback**（avg capture 0.3，Stage 2 到達率 8.3%，平均持倉 42 分鐘 — 結構性缺陷）
@@ -134,7 +144,7 @@
 | **結構分析**：Swing Point + Temporal BOS 追蹤 | 機靈止損 |
 | **三道風控**：BTC Filter + SL Cap + Cooldown | 穩定獲利 |
 | **Crash Recovery**：atomic write + 四重同步 + ghost adoption | 穩定獲利 |
-| **雙策略**：V6 滾倉 / V53 SOP 共用 PositionManager | 穩定獲利 |
+| **雙策略**：V7 結構加倉 / V53 SOP 共用 PositionManager | 穩定獲利 |
 
 ---
 
@@ -170,11 +180,11 @@
 穩定性修補 → V7 P1/P2 → Ghost Fix → Signal Quality → Risk Guard V1
 → Integration Test → Trader Refactor (Phase 0+1+2) → Three-Tier Defense (3/20)
 
-=== 你在這裡 === Testnet 數據蒐集中（→ 4/3 檢視）
+=== 你在這裡 === V7 上線，等 Testnet 驗證
   |
-4/3 分析 P1：Three-Tier Defense 總驗證 + V6 存廢決定
+Testnet 驗證 V7 加倉觸發 + SL 棘輪行為
   |
-4/3 分析 P2：Capture ratio ATR 回測 + Time exit 分析（P1 通過才做）
+4/3 分析：V7 Testnet 表現 + Capture ratio ATR 回測
   |
 V7 P3（ATR 滑價保護）
   |
@@ -194,8 +204,8 @@ V7 P3（ATR 滑價保護）
 ### 近期：4/3 數據分析（3 Phase）
 
 **P1 驗證（4/3 當天）**
-- Three-Tier Defense 總驗證：Stage 2 到達率 vs 8.6%、avg hold vs 0.7h、capture ratio、Tier 1/2 分析
-- V6 存廢決定：go/kill 二選一
+- V7 Testnet 驗證：加倉觸發率、SL 棘輪行為、capture ratio vs V6 歷史
+- Three-Tier Defense 持續追蹤：Stage 2 到達率、avg hold、Tier 1/2 分析
 
 **P2 優化（P1 通過才做）**
 - Capture ratio → ATR mult 回測（低 cap <0.3，ATR×2.0 vs 1.5）
@@ -248,6 +258,8 @@ V7 P3（ATR 滑價保護）
 | V6_FAST_TRAIL_RIGHT_BARS | 2 | Tier 2 加速追蹤右側確認 |
 | V6_4H_EMA20_FORCE_EXIT | false | 暫停 |
 | V6_STAGE1_MAX_HOURS | 36 | Stage 1 等待 |
+| V7_STAGE1_MAX_HOURS | 36 | V7 Stage 1 等待 |
+| V7_STAGE_VOLUME_MULT | 1.0 | V7 加倉量能門檻（volume/vol_ma）|
 | STAGE2_VOLUME_MULT | 1.2 | Stage 2 觸發 |
 | EQUITY_CAP_PERCENT | 0.20 | V6 三段上限 |
 | V53_EQUITY_CAP_PERCENT | 0.10 | V5.3 獨立 cap |
