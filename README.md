@@ -2,7 +2,7 @@
 
 基於 Swing Point 結構分析的加密貨幣期貨交易平台，支援策略拔插（Plugin Architecture）。
 
-> 最後更新：2026-03-24 | 348 tests passed
+> 最後更新：2026-03-25 | 348 tests passed
 
 ## 目錄
 
@@ -49,7 +49,7 @@ trading_bot/
 │
 ├── trader/                      # 核心引擎（Python package）
 │   ├── bot.py                   # 主引擎 TradingBotV6 — 交易主循環
-│   ├── config.py                # ConfigV6 — 集中參數管理
+│   ├── config.py                # Config — 集中參數管理
 │   ├── positions.py             # PositionManager — 倉位生命週期
 │   ├── signals.py               # 2B Pivot 偵測（穿透深度過濾）
 │   ├── structure.py             # Swing Point + Neckline + BOS 追蹤
@@ -92,7 +92,7 @@ trading_bot/
 
 Runtime 自動產生（`.gitignore`）：
 - `positions.json` — 持倉持久化
-- `v6_performance.db` — 交易績效 SQLite
+- `performance.db` — 交易績效 SQLite
 - `hot_symbols.json` — Scanner 掃描結果
 - `scanner_results.db` — Scanner 歷史
 
@@ -128,7 +128,7 @@ pip install -r requirements.txt
   "leverage": 3,
   "risk_per_trade": 0.017,
   "pyramid_enabled": true,
-  "DB_PATH": "v6_performance.db"
+  "DB_PATH": "performance.db"
 }
 ```
 
@@ -314,9 +314,9 @@ V53: size = risk_amount / stop_distance，上限 equity × V53_CAP(10%) × lever
 
 ## 配置系統
 
-`ConfigV6` 集中管理所有參數。
+`Config` 集中管理所有參數。
 
-**載入流程**：`ConfigV6.load_from_json("bot_config.json")` → 自動讀取 `secrets.json` → `validate()`
+**載入流程**：`Config.load_from_json("bot_config.json")` → 自動讀取 `secrets.json` → `validate()`
 
 JSON key 自動映射大寫（`risk_per_trade` → `RISK_PER_TRADE`）。
 
