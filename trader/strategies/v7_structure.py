@@ -180,13 +180,13 @@ class V7StructureStrategy(TradingStrategy):
         atr_buffer = pm.atr * Cfg.SL_ATR_BUFFER if pm.atr else 0
         if pm.side == 'LONG':
             new_sl = swing_price - atr_buffer
-            # 加倉時 SL 至少在 breakeven
-            if pm.avg_entry and new_sl < pm.avg_entry:
+            # Stage 2→3 加倉時 SL 至少在 breakeven（Stage 1→2 不限制，給回調空間）
+            if target_stage >= 3 and pm.avg_entry and new_sl < pm.avg_entry:
                 new_sl = pm.avg_entry
         else:
             new_sl = swing_price + atr_buffer
-            # 加倉時 SL 至少在 breakeven
-            if pm.avg_entry and new_sl > pm.avg_entry:
+            # Stage 2→3 加倉時 SL 至少在 breakeven（Stage 1→2 不限制，給回調空間）
+            if target_stage >= 3 and pm.avg_entry and new_sl > pm.avg_entry:
                 new_sl = pm.avg_entry
 
         self.last_structure_swing = swing_price

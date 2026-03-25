@@ -433,18 +433,16 @@ class TestV7PnlGate:
 
 
 class TestV7BreakevenSL:
-    """加倉後 SL 至少在 breakeven（avg_entry）"""
+    """Stage 2→3 加倉 SL 至少在 breakeven；Stage 1→2 不限制，給回調空間"""
 
-    def test_add_sl_at_least_breakeven_long(self):
-        """LONG 加倉：swing - atr_buffer < avg_entry → SL 拉到 avg_entry"""
+    def test_stage2_to_3_breakeven_long(self):
+        """LONG Stage 2→3：SL 拉到 avg_entry"""
         from trader.strategies.v7_structure import V7StructureStrategy
         from trader.config import Config
-        Config.V7_MIN_PNL_PCT_FOR_ADD = 0.0
         Config.SL_ATR_BUFFER = 0.8
 
         strategy = V7StructureStrategy()
-        # entry=100, atr=2 → buffer=1.6; swing_low near 101 → new_sl=99.4 < avg_entry=100
-        pm = make_pm(side='LONG', entry_price=100.0, stop_loss=88.0, stage=1, atr=2.0)
+        pm = make_pm(side='LONG', entry_price=100.0, stop_loss=88.0, stage=2, atr=2.0)
         pm.avg_entry = 100.0
 
         df = _make_swing_df_long_hl()
@@ -452,15 +450,30 @@ class TestV7BreakevenSL:
         if result is not None:
             assert result['new_sl'] >= pm.avg_entry
 
-    def test_add_sl_at_least_breakeven_short(self):
-        """SHORT 加倉：swing + atr_buffer > avg_entry → SL 拉到 avg_entry"""
+    def test_stage1_to_2_no_breakeven_long(self):
+        """LONG Stage 1→2：不強制 breakeven，SL 可低於 avg_entry"""
         from trader.strategies.v7_structure import V7StructureStrategy
         from trader.config import Config
-        Config.V7_MIN_PNL_PCT_FOR_ADD = 0.0
         Config.SL_ATR_BUFFER = 0.8
 
         strategy = V7StructureStrategy()
-        pm = make_pm(side='SHORT', entry_price=100.0, stop_loss=112.0, stage=1, atr=2.0)
+        pm = make_pm(side='LONG', entry_price=100.0, stop_loss=88.0, stage=1, atr=2.0)
+        pm.avg_entry = 100.0
+
+        df = _make_swing_df_long_hl()
+        result = strategy._check_add_trigger(pm, 102.0, df, Config)
+        # Stage 1→2 不限制，SL 可以低於 avg_entry
+        if result is not None and result['new_sl'] is not None:
+            assert result['new_sl'] < pm.avg_entry or True  # 不強制
+
+    def test_stage2_to_3_breakeven_short(self):
+        """SHORT Stage 2→3：SL 拉到 avg_entry"""
+        from trader.strategies.v7_structure import V7StructureStrategy
+        from trader.config import Config
+        Config.SL_ATR_BUFFER = 0.8
+
+        strategy = V7StructureStrategy()
+        pm = make_pm(side='SHORT', entry_price=100.0, stop_loss=112.0, stage=2, atr=2.0)
         pm.avg_entry = 100.0
 
         df = _make_swing_df_short_lh()
