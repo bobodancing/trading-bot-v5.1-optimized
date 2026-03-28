@@ -1,7 +1,7 @@
-# 最後更新：2026-03-16
+# 最後更新：2026-03-28
 import os
 import ast
-from pathlib import Path
+import sys
 
 # --- 設定區 ---
 PROJECT_ROOT = r"/home/rwfunder/文件/tradingbot/trading_bot"
@@ -10,10 +10,18 @@ OUTPUT_FILE = "project_structure_map_v3.md"
 IGNORE_DIRS = {".git", "__pycache__", ".venv", "venv", "env", "build", "dist", "tests", ".pytest_cache", ".log"}
 IGNORE_FILES = {"__init__.py", "tempCodeRunnerFile.py"}
 
-# 已廢棄的檔案，只顯示標記不展開（filename → 說明）
+# 已廢棄的檔案，只顯示標記不展開（rel_path → 說明，避免不同目錄同名誤判）
 DEPRECATED_STUBS = {
     "core.py":          "re-export stub（拆分四層後廢棄，勿直接 import）",
     "tradingStart.py":  "舊入口點（Bot/Scanner 分離後廢棄，改用 systemd trader/scanner.service）",
+}
+
+# stdlib 模組名（過濾 Dependencies 噪音，只保留 project-internal + third-party）
+STDLIB_MODULES = set(sys.stdlib_module_names) if hasattr(sys, 'stdlib_module_names') else {
+    "os", "sys", "json", "time", "datetime", "logging", "pathlib", "re", "math",
+    "collections", "functools", "itertools", "typing", "abc", "enum", "dataclasses",
+    "hashlib", "hmac", "copy", "threading", "asyncio", "signal", "traceback",
+    "unittest", "sqlite3", "urllib", "contextlib", "io", "struct", "decimal",
 }
 
 # 掃描結束後附加的重要非 Python 檔案（相對於 PROJECT_ROOT）
@@ -84,12 +92,19 @@ class EnhancedProjectMapper(ast.NodeVisitor):
         self.imports = []
         self.constants = []
 
+    def _is_stdlib(self, name: str) -> bool:
+        top = name.split(".")[0]
+        return top in STDLIB_MODULES
+
     def visit_Import(self, node):
         for alias in node.names:
-            self.imports.append(alias.name)
+            if not self._is_stdlib(alias.name):
+                self.imports.append(alias.name)
 
     def visit_ImportFrom(self, node):
         module = node.module or ""
+        if self._is_stdlib(module):
+            return
         names = [alias.name for alias in node.names]
         self.imports.append(f"{module}.({', '.join(names)})")
 
@@ -111,7 +126,7 @@ class EnhancedProjectMapper(ast.NodeVisitor):
         # 抓 __init__ 裡的 self.xxx 屬性
         properties = []
         for item in node.body:
-            if isinstance(item, ast.FunctionDef) and item.name == "__init__":
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == "__init__":
                 for sub_item in ast.walk(item):
                     if isinstance(sub_item, ast.Attribute) and isinstance(sub_item.value, ast.Name):
                         if sub_item.value.id == 'self':
@@ -142,10 +157,13 @@ class EnhancedProjectMapper(ast.NodeVisitor):
                 if isinstance(sub_node.func.value, ast.Name) and sub_node.func.value.id == 'self':
                     internal_calls.append(sub_node.func.attr)
 
-        calls_str = f" [Calls: {', '.join(set(internal_calls))}]" if internal_calls else ""
+        calls_str = f" [Calls: {', '.join(dict.fromkeys(internal_calls))}]" if internal_calls else ""
 
         prefix = "  - Method:" if self.current_class else "- Function:"
         self.results.append(f"{prefix} `{node.name}({', '.join(args)})`{returns}{calls_str}{doc_str}")
+
+    # async def 也走同一邏輯
+    visit_AsyncFunctionDef = visit_FunctionDef
 
 
 def scan_project():
@@ -162,17 +180,15 @@ def scan_project():
         for file in sorted(files):
             if not file.endswith(".py"):
                 continue
-            if file == os.path.basename(__file__):
-                continue
             if file in IGNORE_FILES:
                 continue
 
             rel_path = os.path.relpath(os.path.join(root, file), PROJECT_ROOT)
 
-            # 已廢棄檔案：只標記，不展開
-            if file in DEPRECATED_STUBS:
-                reason = DEPRECATED_STUBS[file]
-                output_content.append(f"## 📄 File: `{rel_path}` ⚠️ Deprecated — {reason}\n\n---\n")
+            # 已廢棄檔案：只標記，不展開（用 rel_path 或 filename 都查）
+            dep_reason = DEPRECATED_STUBS.get(rel_path) or DEPRECATED_STUBS.get(file)
+            if dep_reason:
+                output_content.append(f"## 📄 File: `{rel_path}` ⚠️ Deprecated — {dep_reason}\n\n---\n")
                 continue
 
             output_content.append(f"## 📄 File: `{rel_path}`")
