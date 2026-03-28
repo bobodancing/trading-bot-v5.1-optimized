@@ -531,19 +531,13 @@ class TradingBotV6:
                     signal_details['btc_trend'] = btc_trend or "UNKNOWN"
 
                     if btc_trend in ("RANGING", None):
-                        # BTC 橫盤或取數據失敗 → 保守模式：只做 A tier + 降倉
+                        # BTC 橫盤或數據失敗 → 完全停止趨勢進場
                         ranging_label = "RANGING" if btc_trend == "RANGING" else "UNKNOWN"
-                        if signal_tier != 'A':
-                            logger.info(
-                                f"{symbol}: 跳過（BTC {ranging_label}，"
-                                f"Tier {signal_tier} < 保守門檻 A）"
-                            )
-                            continue
-                        tier_multiplier *= Config.BTC_RANGING_POSITION_MULT
                         logger.info(
-                            f"{symbol}: BTC {ranging_label}，保守模式"
-                            f"（只做 A tier，倉位 ×{Config.BTC_RANGING_POSITION_MULT}）"
+                            f"{symbol}: 跳過（BTC {ranging_label}，"
+                            f"趨勢策略暫停，等待網格策略接手）"
                         )
+                        continue
 
                     elif signal_side != btc_trend:
                         if Config.BTC_COUNTER_TREND_MULT <= 0:

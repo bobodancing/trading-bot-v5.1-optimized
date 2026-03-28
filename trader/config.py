@@ -221,8 +221,7 @@ class Config:
     # 判定方式：BTC/USDT 1D EMA20 vs EMA50
     BTC_TREND_FILTER_ENABLED = True
     BTC_COUNTER_TREND_MULT = 0.0  # 0.0 = 禁止逆勢進場
-    BTC_EMA_RANGING_THRESHOLD = 0.02  # BTC EMA20/50 差距 < 2% 視為 RANGING
-    BTC_RANGING_POSITION_MULT = 0.5   # RANGING 時倉位乘數（保守模式）
+    BTC_EMA_RANGING_THRESHOLD = 0.005  # BTC EMA20/50 差距 < 0.5% → RANGING → 完全停止趨勢進場
 
     # SL 距離上限（佔 entry price 的百分比）
     # 超過此距離的交易直接跳過（防小幣結構寬導致單筆巨虧）
