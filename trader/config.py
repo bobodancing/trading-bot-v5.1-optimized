@@ -144,7 +144,8 @@ class Config:
     # ===== 從 hardcode 提取的參數（2026-03-21 cleanup）=====
 
     # 2B 信號：最大穿透深度（ATR 倍數），超過視為趨勢反轉非 fakeout
-    MAX_FAKEOUT_ATR = 3.0
+    # 1.5-3.0 ATR: 33% WR / -0.49R（3 筆），過深 = 真突破
+    MAX_FAKEOUT_ATR = 1.5
 
     # 信號止損 ATR buffer（signals.py 用，與 SL_ATR_BUFFER 分開管理）
     SL_ATR_BUFFER_SIGNAL = 0.5
@@ -173,8 +174,11 @@ class Config:
     SL_ATR_BUFFER = 0.8
 
     # 2B 信號最小穿透深度（ATR 倍數）
-    # 穿透不足視為噪音，非真正流動性獵殺
-    MIN_FAKEOUT_ATR = 0.3
+    # 0.3-0.6 ATR: 67% WR 但 avg R=-0.07（18 筆），淺層穿透 = 噪音
+    MIN_FAKEOUT_ATR = 0.6
+
+    # 2B 信號 ADX 上限：ADX>50 的 2B 有 53% WR / -0.23R（15 筆），趨勢過強不宜反轉
+    ADX_MAX_2B = 50
 
     # Reverse 2B 出場最小穿透深度（ATR 倍數）
     # 出場 reverse 2B 穿透不足視為噪音 wick，不觸發平倉

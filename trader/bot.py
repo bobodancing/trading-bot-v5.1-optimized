@@ -404,6 +404,10 @@ class TradingBotV6:
                 if not df_mtf.empty:
                     df_mtf = TechnicalAnalysis.calculate_indicators(df_mtf)
 
+                # 移除當前未關閉 K 線，確保信號偵測基於已確認數據
+                # Binance API 回傳的最後一根 K 線是正在形成中的，用中間值做判斷會產生假信號
+                df_signal = df_signal.iloc[:-1]
+
                 # 市場過濾
                 market_ok, market_reason, is_strong_market = MarketFilter.check_market_condition(df_trend, symbol)
                 if not market_ok:

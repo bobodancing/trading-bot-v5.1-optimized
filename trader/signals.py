@@ -192,6 +192,26 @@ def detect_2b_with_pivots(
 
     signal_details['fakeout_depth_atr'] = fakeout_depth_atr
 
+    # === 6b. Explosive volume 過濾 ===
+    # 爆量 2B = 大概率是真突破非 fakeout（4 筆 2B explosive: 1/4 wins, avg R=-0.63）
+    if signal_strength == 'explosive':
+        logger.debug(
+            f"2B {signal_side} filtered: explosive volume ({vol_ratio:.2f}x) — "
+            f"likely genuine breakout, not fakeout"
+        )
+        return False, None
+
+    # === 6c. ADX 上限過濾 ===
+    # ADX>50 的 2B: 53% WR / avg R=-0.23（15 筆），趨勢過強時反轉容易失敗
+    adx = current.get('adx', 0)
+    adx_max = getattr(Config, 'ADX_MAX_2B', 50)
+    if adx and adx > adx_max:
+        logger.debug(
+            f"2B {signal_side} filtered: ADX {adx:.1f} > {adx_max} — "
+            f"trend too strong for reversal"
+        )
+        return False, None
+
     # === 7. 計算止損距離（用 swing point + ATR buffer）===
     if signal_side == 'LONG':
         # 止損 = swing low - 0.5 * ATR（給緩衝）
