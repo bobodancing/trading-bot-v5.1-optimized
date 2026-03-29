@@ -120,6 +120,12 @@
 - [x] 回測驗證：P2 V7 翻盈+$156 / P4 V7 虧損縮-$482 / P5 WR+2.2% PF+0.19
 - [x] 366 tests passed ✅
 
+### Production Readiness Config（2026-03-29）
+
+- [x] `use_hard_stop_loss`: false → true（STOP_MARKET 掛單，Production 必備，testnet 先驗證流程）
+- [x] `v7_stage_volume_mult`: 1.0 → 1.2（V7 加倉量能條件收緊，要求高於均值 20%，原 1.0x 條件太鬆）
+- [x] `max_hold_hours`: 168 → 72（7 天 → 3 天，文件對齊；code 由 V53 24h + V7 36h 各自強制，此為上限記錄）
+
 ### 其他已完成
 
 - [x] close_position rollback tests
@@ -265,6 +271,9 @@ V7 P3（ATR 滑價保護）
 | V6_4H_EMA20_FORCE_EXIT | false | 暫停 |
 | V6_STAGE1_MAX_HOURS | 36 | Stage 1 等待 |
 | STAGE2_VOLUME_MULT | 1.2 | Stage 2 觸發 |
+| V7_STAGE_VOLUME_MULT | 1.2 | V7 加倉量能門檻（高於均值 20%） |
+| USE_HARD_STOP_LOSS | true | STOP_MARKET 掛單止損 |
+| MAX_HOLD_HOURS | 72 | 最大持倉上限（文件用，V53/V7 各自強制） |
 | EQUITY_CAP_PERCENT | 0.20 | V6 三段上限 |
 | V53_EQUITY_CAP_PERCENT | 0.10 | V5.3 獨立 cap |
 | STAGE1/2/3_RATIO | 0.33/0.37/0.30 | Stage 分配 |

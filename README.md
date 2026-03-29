@@ -235,7 +235,7 @@ SIGNAL_STRATEGY_MAP = {
 | 2 — 第一加倉 | Lower High（SHORT）/ Higher Low（LONG）+ 順勢K + 量能 | `risk_per_trade` (1.7%) | 新 swing point |
 | 3 — 第二加倉 | 再次結構確認 | `risk_per_trade` (1.7%) | 最新 swing point |
 
-加倉三條件 AND：**Swing Point 確認 + 順勢K（body/range ≥ 0.3）+ 量能（≥ vol_ma）**
+加倉三條件 AND：**Swing Point 確認 + 順勢K（body/range ≥ 0.3）+ 量能（≥ vol_ma × 1.2）**
 
 #### 出場機制
 
@@ -339,6 +339,9 @@ JSON key 自動映射大寫（`risk_per_trade` → `RISK_PER_TRADE`）。
 | `BTC_TREND_FILTER_ENABLED` | true | BTC 趨勢過濾 |
 | `BTC_EMA_RANGING_THRESHOLD` | 0.005 | EMA20/50 差距 < 0.5% → RANGING |
 | `V7_MIN_SIGNAL_TIER` | 'B' | V7 最低進場 Tier |
+| `V7_STAGE_VOLUME_MULT` | 1.2 | V7 加倉量能門檻（> vol_ma × 1.2） |
+| `USE_HARD_STOP_LOSS` | true | STOP_MARKET 掛單止損（Bot 斷線保護） |
+| `MAX_HOLD_HOURS` | 72 | 最大持倉上限（V53 24h / V7 36h 各自強制） |
 | `MAX_SL_DISTANCE_PCT` | 0.06 | SL 距離上限 |
 | `SYMBOL_LOSS_COOLDOWN_HOURS` | 24 | 同幣虧損冷卻 |
 
