@@ -75,6 +75,16 @@ def _adx(high: pd.Series, low: pd.Series, close: pd.Series, length: int):
     return result
 
 
+def _bbw(series: pd.Series, length: int = 20, std_dev: float = 2.0) -> pd.Series:
+    """Bollinger Band Width = (upper - lower) / middle"""
+    middle = series.rolling(window=length).mean()
+    std = series.rolling(window=length).std()
+    upper = middle + std_dev * std
+    lower = middle - std_dev * std
+    bbw = (upper - lower) / middle
+    return bbw
+
+
 # ==================== 技術分析 ====================
 
 class TechnicalAnalysis:
