@@ -100,3 +100,27 @@ class BinanceFuturesClient:
         except Exception as e:
             logger.error(f"API 請求失敗: {e}")
             return {"error": str(e)}
+
+    def get_position_mode(self):
+        """查詢是否已啟用 hedge mode (dualSidePosition)"""
+        try:
+            resp = self.signed_request_json('GET', '/fapi/v1/positionSide/dual')
+            if resp and 'dualSidePosition' in resp:
+                return resp['dualSidePosition']
+        except Exception as e:
+            logger.warning(f"Failed to get position mode: {e}")
+        return None
+
+    def set_hedge_mode(self, dual: bool = True) -> bool:
+        """設定 hedge mode。注意：有持倉時無法切換。"""
+        try:
+            resp = self.signed_request_json(
+                'POST', '/fapi/v1/positionSide/dual',
+                params={'dualSidePosition': str(dual).lower()}
+            )
+            if resp is not None:
+                logger.info(f"Hedge mode set to {dual}")
+                return True
+        except Exception as e:
+            logger.error(f"Failed to set hedge mode: {e}")
+        return False
