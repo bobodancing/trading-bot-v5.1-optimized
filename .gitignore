@@ -39,3 +39,6 @@ review_cleanup_指令書.md
 
 # rwUbuntu 機器專用，不推 GitHub
 vpn_watchdog.py
+
+# Git worktrees
+.worktrees/
