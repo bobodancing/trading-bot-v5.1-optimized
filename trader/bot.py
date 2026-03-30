@@ -39,7 +39,10 @@ from trader.indicators.technical import (
     MarketFilter,
 )
 # 風險管理層
-from trader.risk.manager import PrecisionHandler, RiskManager, SignalTierSystem
+from trader.risk.manager import PrecisionHandler, RiskManager, SignalTierSystem, PoolManager
+from trader.regime import RegimeEngine
+from trader.grid import V8AtrGrid
+from trader.indicators.technical import _bbw, _adx
 # 訂單執行層
 from trader.execution.order_engine import OrderExecutionEngine
 from trader.config import ConfigV6 as Config
@@ -108,6 +111,15 @@ class TradingBotV6:
 
         # Telegram 互動指令
         self.telegram_handler = TelegramCommandHandler(self)
+
+        # Grid / Regime system
+        self.regime_engine = RegimeEngine()
+        self.pool_manager = PoolManager()
+        self.grid_engine = V8AtrGrid(
+            api_client=self.futures_client,
+            notifier=None,
+        )
+        self.grid_trades: dict = {}
         self._start_time = datetime.now(timezone.utc)
 
     def _init_exchange(self):
@@ -326,6 +338,30 @@ class TradingBotV6:
         symbols = self.load_scanner_results() if Config.USE_SCANNER_SYMBOLS else Config.SYMBOLS
         logger.debug(f"開始掃描 {len(symbols)} 個標的...")  # 降噪
 
+        # === RegimeEngine routing (only when grid trading enabled) ===
+        if Config.ENABLE_GRID_TRADING:
+            btc_df_4h = self.data_provider.fetch_ohlcv("BTC/USDT", Config.REGIME_TIMEFRAME, limit=60)
+            if btc_df_4h is not None and not btc_df_4h.empty:
+                btc_df_4h = TechnicalAnalysis.calculate_indicators(btc_df_4h)
+                btc_df_4h['bbw'] = _bbw(btc_df_4h['close'])
+                adx_data = _adx(btc_df_4h['high'], btc_df_4h['low'], btc_df_4h['close'], length=14)
+                if adx_data is not None:
+                    for col in adx_data.columns:
+                        if col.startswith('DMP') or col.startswith('DMN'):
+                            btc_df_4h[col] = adx_data[col]
+                old_regime = self.regime_engine.current_regime
+                regime = self.regime_engine.update(btc_df_4h)
+                if regime != old_regime:
+                    TelegramNotifier.notify_regime_change(old_regime, regime, Config.REGIME_CONFIRM_CANDLES)
+                if regime == "RANGING":
+                    self._scan_grid_signals()
+                    return  # skip trend scanning
+                elif regime == "SQUEEZE":
+                    if self.grid_engine.state and not self.grid_engine.state.converging:
+                        self.grid_engine.converge()
+                    return  # both sides pause
+                # TRENDING — continue to trend scanning below
+
         for symbol in symbols:
             try:
                 # 跳過已有持倉
@@ -531,7 +567,10 @@ class TradingBotV6:
 
                 # === Risk Guard: BTC Trend Filter ===
                 if Config.BTC_TREND_FILTER_ENABLED and "BTC" not in symbol:
-                    btc_trend = self._check_btc_trend()
+                    if Config.ENABLE_GRID_TRADING:
+                        btc_trend = self.regime_engine.trend_direction
+                    else:
+                        btc_trend = self._check_btc_trend()
                     signal_details['btc_trend'] = btc_trend or "UNKNOWN"
 
                     if btc_trend in ("RANGING", None):
@@ -587,6 +626,143 @@ class TradingBotV6:
         })
 
     # ==================== Private Helpers ====================
+
+    def _scan_grid_signals(self):
+        """網格策略掃描 — 僅 BTC/USDT"""
+        if not Config.ENABLE_GRID_TRADING:
+            return
+
+        # Cooldown check
+        if self.grid_engine.state and self.grid_engine.state.last_cooldown_time > 0:
+            elapsed = time.time() - self.grid_engine.state.last_cooldown_time
+            if elapsed < Config.GRID_COOLDOWN_HOURS * 3600:
+                return
+
+        # Activate if needed
+        if not self.grid_engine.state:
+            balance = self.risk_manager.get_balance()
+            if not self.pool_manager.activate_grid_pool(balance):
+                return
+            btc_df_4h = self.data_provider.fetch_ohlcv("BTC/USDT", "4h", limit=60)
+            if btc_df_4h is None or btc_df_4h.empty:
+                return
+            grid_balance = self.pool_manager.get_grid_balance()
+            self.grid_engine.activate(btc_df_4h, grid_balance)
+            if self.grid_engine.state:
+                TelegramNotifier.notify_grid_activated(
+                    self.grid_engine.state.center,
+                    self.grid_engine.state.lower,
+                    self.grid_engine.state.upper,
+                    self.grid_engine.state.grid_levels,
+                )
+
+        # Tick
+        ticker = self.fetch_ticker("BTC/USDT")
+        if not ticker:
+            return
+        current_price = ticker['last']
+        btc_df_1h = self.data_provider.fetch_ohlcv("BTC/USDT", Config.TIMEFRAME_SIGNAL, limit=50)
+        if btc_df_1h is None or btc_df_1h.empty:
+            return
+
+        actions = self.grid_engine.tick(current_price, btc_df_1h)
+        for action in actions:
+            self._execute_grid_action(action, current_price)
+        self.grid_engine.save_state()
+
+    def _execute_grid_action(self, action, current_price: float):
+        """執行網格動作（開倉/平倉）"""
+        if Config.V6_DRY_RUN:
+            logger.info(f"[DRY_RUN] Grid {action.type} {action.side} L{action.level} "
+                        f"size={action.size:.4f} @ {current_price:.0f}")
+            return
+
+        try:
+            if action.type == 'OPEN':
+                side = 'BUY' if action.side == 'LONG' else 'SELL'
+                result = self.futures_client.signed_request_json(
+                    'POST', '/fapi/v1/order',
+                    params={
+                        'symbol': 'BTCUSDT',
+                        'side': side,
+                        'type': 'MARKET',
+                        'quantity': f"{action.size:.4f}",
+                        'positionSide': action.side,
+                    }
+                )
+                if result:
+                    TelegramNotifier.notify_grid_action('OPEN', action.side, action.level, current_price, action.size)
+            elif action.type == 'CLOSE':
+                side = 'SELL' if action.side == 'LONG' else 'BUY'
+                result = self.futures_client.signed_request_json(
+                    'POST', '/fapi/v1/order',
+                    params={
+                        'symbol': 'BTCUSDT',
+                        'side': side,
+                        'type': 'MARKET',
+                        'quantity': f"{action.size:.4f}",
+                        'positionSide': action.side,
+                    }
+                )
+                if result:
+                    entry_price = self._find_grid_entry_price(action)
+                    if action.side == 'LONG':
+                        pnl = (current_price - entry_price) * action.size
+                    else:
+                        pnl = (entry_price - current_price) * action.size
+                    self.pool_manager.grid_realized_pnl += pnl
+                    TelegramNotifier.notify_grid_close(action.level, action.side, current_price, pnl)
+                    self._record_grid_trade(action, entry_price, current_price, pnl)
+        except Exception as e:
+            logger.error(f"Grid action failed: {action} — {e}")
+
+    def _record_grid_trade(self, action, entry_price: float, exit_price: float, pnl: float):
+        """記錄 grid 交易到 performance.db"""
+        now = datetime.now(timezone.utc)
+        self.perf_db.record_trade({
+            "trade_id": f"grid_{action.side}_{action.level}_{int(time.time())}",
+            "symbol": "BTC/USDT",
+            "side": action.side,
+            "is_v6_pyramid": 0,
+            "signal_tier": None,
+            "entry_price": entry_price,
+            "exit_price": exit_price,
+            "total_size": action.size,
+            "initial_r": 0.0,
+            "entry_time": now.isoformat(),
+            "exit_time": now.isoformat(),
+            "holding_hours": 0.0,
+            "pnl_usdt": pnl,
+            "pnl_pct": pnl / self.pool_manager.grid_allocated * 100 if self.pool_manager.grid_allocated > 0 else 0,
+            "realized_r": 0.0,
+            "mfe_pct": 0.0,
+            "mae_pct": 0.0,
+            "capture_ratio": None,
+            "stage_reached": 0,
+            "exit_reason": "grid_close",
+            "market_regime": self.regime_engine.current_regime,
+            "entry_adx": None,
+            "fakeout_depth_atr": None,
+            "reverse_2b_depth_atr": None,
+            "original_size": action.size,
+            "partial_pnl_usdt": None,
+            "btc_trend_aligned": None,
+            "trend_adx": None,
+            "mtf_aligned": None,
+            "volume_grade": None,
+            "tier_score": None,
+            "strategy_name": "v8_atr_grid",
+            "grid_level": action.level,
+            "grid_round": self.pool_manager._round_count,
+        })
+
+    def _find_grid_entry_price(self, action) -> float:
+        """從 grid_engine.state 找到對應格位的進場價"""
+        if self.grid_engine.state:
+            for pos in self.grid_engine.state.active_positions:
+                if pos['level'] == action.level and pos['side'] == action.side:
+                    return pos['entry']
+        return action.price
 
     def _check_btc_trend(self) -> Optional[str]:
         """Fetch BTC 1D EMA20/50 trend. Returns 'LONG', 'SHORT', 'RANGING', or None on failure."""
@@ -1068,6 +1244,31 @@ class TradingBotV6:
             'unrealized_pnl': f'{cycle_unrealized_pnl:.2f}',
             'net_pnl_pct': f'{net_pnl_pct:+.2f}',
         })
+
+        # === Grid monitoring ===
+        if Config.ENABLE_GRID_TRADING and self.grid_engine.state:
+            regime = self.regime_engine.current_regime
+            if regime != "RANGING" and not self.grid_engine.state.converging:
+                self.grid_engine.converge()
+                TelegramNotifier.notify_grid_stopped("regime_change", f"→ {regime}")
+
+            ticker = self.fetch_ticker("BTC/USDT")
+            if ticker:
+                current_price = ticker['last']
+                btc_df_1h = self.data_provider.fetch_ohlcv("BTC/USDT", Config.TIMEFRAME_SIGNAL, limit=50)
+                if btc_df_1h is not None and not btc_df_1h.empty:
+                    actions = self.grid_engine.tick(current_price, btc_df_1h)
+                    for action in actions:
+                        self._execute_grid_action(action, current_price)
+
+                    # Check if converge complete (no positions left)
+                    if self.grid_engine.state and self.grid_engine.state.converging and not self.grid_engine.state.active_positions:
+                        logger.info("Grid converge complete — deactivating")
+                        self.pool_manager.deactivate_grid_pool()
+                        self.grid_engine.deactivate()
+
+                    if self.grid_engine.state:
+                        self.grid_engine.save_state()
 
     def _fetch_exchange_stop_map(self) -> Dict[str, float]:
         """
