@@ -6,7 +6,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 import pytest
 import pandas as pd
 import numpy as np
-from trader.grid import V8AtrGrid, GridState, GridAction
+from trader.strategies.v8_grid import V8AtrGrid, GridState, GridAction
 
 
 def _make_1h_df(close_values, n=50):

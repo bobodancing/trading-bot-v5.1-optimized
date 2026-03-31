@@ -1,4 +1,4 @@
-# trader/grid.py
+# trader/strategies/v8_grid/grid.py
 """
 V8 ATR 自適應網格引擎
 虛擬網格策略：SMA ± k*ATR 定義區間，金字塔權重，固定網格線 + 偏移重置。

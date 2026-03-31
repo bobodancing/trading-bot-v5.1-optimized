@@ -3,7 +3,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import pytest
-from trader.risk.manager import PoolManager
+from trader.strategies.v8_grid import PoolManager
 
 
 class TestPoolManager:

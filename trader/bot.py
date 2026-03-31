@@ -39,9 +39,9 @@ from trader.indicators.technical import (
     MarketFilter,
 )
 # 風險管理層
-from trader.risk.manager import PrecisionHandler, RiskManager, SignalTierSystem, PoolManager
+from trader.risk.manager import PrecisionHandler, RiskManager, SignalTierSystem
 from trader.regime import RegimeEngine
-from trader.grid import V8AtrGrid
+from trader.strategies.v8_grid import V8AtrGrid, PoolManager
 from trader.indicators.technical import _bbw, _adx
 # 訂單執行層
 from trader.execution.order_engine import OrderExecutionEngine

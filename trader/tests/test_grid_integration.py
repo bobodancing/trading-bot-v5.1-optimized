@@ -8,8 +8,7 @@ import pandas as pd
 import numpy as np
 from unittest.mock import MagicMock, patch
 from trader.regime import RegimeEngine
-from trader.grid import V8AtrGrid, GridState
-from trader.risk.manager import PoolManager
+from trader.strategies.v8_grid import V8AtrGrid, GridState, PoolManager
 from trader.config import ConfigV6 as Config
 
 

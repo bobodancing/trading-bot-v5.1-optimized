@@ -2,7 +2,7 @@
 
 基於 Swing Point 結構分析的加密貨幣期貨交易平台，支援策略拔插（Plugin Architecture）。
 
-> 最後更新：2026-03-28 | 362 tests passed
+> 最後更新：2026-03-31 | 405 tests passed
 
 ## 目錄
 
@@ -26,11 +26,20 @@
 
 **內建策略**：
 
-| 策略 | 進場信號 | 持倉管理 |
-|------|----------|----------|
-| **V7 Structure** | 2B Swing Pivot Breakout | 三段結構加倉（Swing-based SL 棘輪）+ 反向 2B + 超時退出 |
-| **V53 SOP** | EMA Pullback / Volume Breakout | 1.0R / 1.5R / 2.0R 分批減倉 |
-| ~~V6 Pyramid~~ | ~~2B~~ | ~~deprecated，既有倉位仍可運行~~ |
+| 策略 | 適用市況 | 進場信號 | 持倉管理 |
+|------|---------|----------|----------|
+| **V7 Structure** | TRENDING | 2B Swing Pivot Breakout | 三段結構加倉（Swing-based SL 棘輪）+ 反向 2B + 超時退出 |
+| **V53 SOP** | TRENDING | EMA Pullback / Volume Breakout | 1.0R / 1.5R / 2.0R 分批減倉 |
+| **V8 ATR Grid** | RANGING | RegimeEngine 自動切換 | SMA±k*ATR 虛擬網格，金字塔權重，converge 退出（`ENABLE_GRID_TRADING=False`）|
+| ~~V6 Pyramid~~ | — | ~~2B~~ | ~~deprecated，既有倉位仍可運行~~ |
+
+**市場 Regime 路由**（`ENABLE_GRID_TRADING=True` 時）：
+
+```
+RANGING  → V8 ATR Grid（BTC/USDT 專用）
+TRENDING → V53 SOP + V7 Structure
+SQUEEZE  → 全暫停（Grid converge）
+```
 
 **新增策略**只需：寫 class → `StrategyFactory.register()` → config 映射，不動 bot.py。
 
@@ -70,16 +79,23 @@ trading_bot/
 │   ├── indicators/
 │   │   └── technical.py         # TechnicalAnalysis / DynamicThresholdManager / MTF / MarketFilter
 │   │
+│   ├── regime.py                # RegimeEngine — TRENDING/RANGING/SQUEEZE 三態偵測（ADX+BBW+ATR）
+│   ├── grid.py                  # V8AtrGrid — 虛擬網格引擎（SMA±k*ATR，金字塔權重）
+│   │
 │   ├── risk/
-│   │   └── manager.py           # PrecisionHandler / RiskManager / SignalTierSystem
+│   │   └── manager.py           # PrecisionHandler / RiskManager / SignalTierSystem / PoolManager
 │   │
 │   ├── execution/
 │   │   └── order_engine.py      # OrderExecutionEngine（下單 / 止損 / 平倉）
 │   │
-│   └── tests/                   # 362 tests
+│   └── tests/                   # 405 tests
 │       ├── conftest.py
 │       ├── test_integration.py  # StatefulMockEngine + FaultInjector
-│       └── test_*.py            # 28 test modules
+│       ├── test_regime.py       # RegimeEngine 三態偵測
+│       ├── test_grid.py         # V8AtrGrid 網格邏輯
+│       ├── test_pool_manager.py # PoolManager 資金池
+│       ├── test_grid_integration.py # Regime→Grid 聯動
+│       └── test_*.py            # 34+ test modules
 │
 ├── scanner/                     # Market Scanner（獨立服務）
 │   └── market_scanner.py        # 四層掃描（流動性 → 動能 → 形態 → 相關性）
@@ -171,11 +187,13 @@ Bot 啟動
 
 | 層 | 模組 | 職責 |
 |----|------|------|
-| **主引擎** | `bot.py` | 交易主循環、信號掃描、倉位監控 |
+| **主引擎** | `bot.py` | 交易主循環、信號掃描、倉位監控、Regime 路由 |
+| **Regime 引擎** | `regime.py` | TRENDING/RANGING/SQUEEZE 三態偵測（ADX+BBW+ATR，3-candle hysteresis）|
+| **網格引擎** | `grid.py` | V8 ATR Grid 虛擬網格（SMA±k*ATR，金字塔，converge+72h）|
 | **倉位管理** | `positions.py` | 單 symbol 生命週期、Stage 管理、序列化 |
 | **策略插件** | `strategies/` | 出場邏輯（Registry 模式，可拔插） |
 | **信號偵測** | `signals.py` + `structure.py` | 2B Pivot 偵測、Swing Point、Neckline |
-| **風控** | `risk/manager.py` | 精度處理、倉位計算、Tier 分級 |
+| **風控** | `risk/manager.py` | 精度處理、倉位計算、Tier 分級、PoolManager |
 | **執行** | `execution/order_engine.py` | 下單、止損、平倉 |
 | **基礎設施** | `infrastructure/` | API client、Telegram、數據、績效 DB |
 | **指標** | `indicators/technical.py` | TA / DTM / MTF / MarketFilter |
@@ -222,7 +240,7 @@ SIGNAL_STRATEGY_MAP = {
 
 #### 信號偵測
 
-使用 Swing Point Pivot（左 7 根 + 右 3 根確認），穿透深度 ≥ 0.3 ATR 過濾噪音。
+使用 Swing Point Pivot（左 7 根 + 右 3 根確認），穿透深度 0.6–1.5 ATR 過濾噪音（淺層=噪音，過深=真突破）。
 
 - **Bullish 2B**：價格跌破 confirmed swing low 後放量收回
 - **Bearish 2B**：價格突破 confirmed swing high 後放量收回
@@ -235,7 +253,7 @@ SIGNAL_STRATEGY_MAP = {
 | 2 — 第一加倉 | Lower High（SHORT）/ Higher Low（LONG）+ 順勢K + 量能 | `risk_per_trade` (1.7%) | 新 swing point |
 | 3 — 第二加倉 | 再次結構確認 | `risk_per_trade` (1.7%) | 最新 swing point |
 
-加倉三條件 AND：**Swing Point 確認 + 順勢K（body/range ≥ 0.3）+ 量能（≥ vol_ma）**
+加倉三條件 AND：**Swing Point 確認 + 順勢K（body/range ≥ 0.3）+ 量能（≥ vol_ma × 1.2）**
 
 #### 出場機制
 
@@ -252,6 +270,31 @@ SIGNAL_STRATEGY_MAP = {
 | 2.0R | 獲利達 2.0R | 減倉 30%，移損至 +1.5R |
 | Structure Break | 連續 2 根收破 swing | 全平 |
 
+### V8 ATR Grid（BTC RANGING 網格）
+
+**啟用條件**：`ENABLE_GRID_TRADING = True`（預設 False，testnet 驗證後開啟）
+**Binance 需求**：Hedge Mode（`dualSidePosition=true`，啟動時自動檢查）
+
+| 組件 | 功能 |
+|------|------|
+| **RegimeEngine** | 4H ADX+BBW+ATR 三態偵測，3-candle hysteresis 防抖 |
+| **PoolManager** | 資金池隔離（Grid 30% / Trend 70%）|
+| **V8AtrGrid** | SMA±k*ATR 區間，5 格金字塔（L1=0.5x~L5=1.5x 權重） |
+
+**Regime 路由**：
+- `RANGING` → Grid 啟動，掃 BTC 1H tick
+- `TRENDING` → Grid converge（72h timeout → force_close），V53/V7 接手
+- `SQUEEZE` → Grid converge，趨勢暫停，等突破
+
+**關鍵參數**：
+
+| 參數 | 值 | 說明 |
+|------|----|------|
+| `GRID_CAPITAL_RATIO` | 0.30 | Grid 池占比 |
+| `GRID_RISK_PER_TRADE` | 0.025 | 單格風險 2.5% |
+| `GRID_ATR_MULTIPLIER` | 2.5 | 上下軌 SMA ± k*ATR |
+| `GRID_CONVERGE_TIMEOUT_HOURS` | 72 | 均值回歸等待上限 |
+
 ### V6 Pyramid（已廢棄，歷史參考）
 
 既有 V6 持倉仍可正常平倉，新進場不再使用。
@@ -266,6 +309,9 @@ SIGNAL_STRATEGY_MAP = {
 | BTC RANGING Filter | BTC EMA20/50 差距 < 0.5% → 完全停止進場 | 橫盤市場不做趨勢單 |
 | Tier C Filter | V7 進場信號 Tier < B → 跳過 | 去除低品質信號 |
 | SL Distance Cap | SL 距離 > 6% 入場價 → 跳過 | 防止大波動吃大虧 |
+| Explosive Volume Filter | 2B 信號 vol_ratio ≥ 2.5x → 跳過 | 爆量=真突破非 fakeout |
+| ADX Cap | ADX > 50 時 2B 信號 → 跳過 | 趨勢過強不宜反轉 |
+| Mid-candle Guard | 移除未關閉 K 線再偵測信號 | 防止未確認數據假信號 |
 | Symbol Cooldown | 同幣虧損後 24h 內不再進場 | 防連虧 |
 
 ---
@@ -330,10 +376,15 @@ JSON key 自動映射大寫（`risk_per_trade` → `RISK_PER_TRADE`）。
 | `SWING_LEFT_BARS` / `RIGHT` | 7 / 3 | Swing Point 確認 |
 | `SL_ATR_BUFFER` | 0.8 | 止損 ATR 緩衝 |
 | `V6_BREAKEVEN_MFE_R` | 1.5 | Tier 1 保本觸發（MFE≥1.5R） |
-| `MIN_FAKEOUT_ATR` | 0.3 | 2B 最小穿透深度 |
+| `MIN_FAKEOUT_ATR` | 0.6 | 2B 最小穿透深度 |
+| `MAX_FAKEOUT_ATR` | 1.5 | 2B 最大穿透深度 |
+| `ADX_MAX_2B` | 50 | 2B 信號 ADX 上限 |
 | `BTC_TREND_FILTER_ENABLED` | true | BTC 趨勢過濾 |
 | `BTC_EMA_RANGING_THRESHOLD` | 0.005 | EMA20/50 差距 < 0.5% → RANGING |
 | `V7_MIN_SIGNAL_TIER` | 'B' | V7 最低進場 Tier |
+| `V7_STAGE_VOLUME_MULT` | 1.2 | V7 加倉量能門檻（> vol_ma × 1.2） |
+| `USE_HARD_STOP_LOSS` | true | STOP_MARKET 掛單止損（Bot 斷線保護） |
+| `MAX_HOLD_HOURS` | 72 | 最大持倉上限（V53 24h / V7 36h 各自強制） |
 | `MAX_SL_DISTANCE_PCT` | 0.06 | SL 距離上限 |
 | `SYMBOL_LOSS_COOLDOWN_HOURS` | 24 | 同幣虧損冷卻 |
 
@@ -382,11 +433,12 @@ SIGNAL_STRATEGY_MAP = {
 
 ## 測試
 
-362 個 pytest，全部通過。
+405 個 pytest，全部通過。
 
 ```bash
 python3 -m pytest trader/tests/ -v
 python3 -m pytest trader/tests/test_v7_structure.py -v  # V7 單一模組
+python3 -m pytest trader/tests/test_regime.py trader/tests/test_grid.py -v  # V8 Grid
 ```
 
 ### 測試覆蓋
@@ -403,7 +455,12 @@ python3 -m pytest trader/tests/test_v7_structure.py -v  # V7 單一模組
 | `test_v7p2.py` | 16 | Strategy dispatch |
 | `test_tier_equity_balance.py` | 13 | Tier mult / equity cap |
 | `test_reverse_2b_exit.py` | 9 | 穿透深度 + 雙根確認 |
-| 其他 16 個模組 | 183 | 各子系統 |
+| `test_2b_quality_filters.py` | 10 | Explosive vol / ADX cap / Fakeout range |
+| `test_regime.py` | 10 | RegimeEngine 三態偵測 + BBW ratio fallback |
+| `test_grid.py` | — | V8AtrGrid tick / activate / converge / sizing |
+| `test_pool_manager.py` | 9 | PoolManager 資金池 |
+| `test_grid_integration.py` | 8 | Regime→Grid 聯動 + persistence |
+| 其他 16 個模組 | 177 | 各子系統 |
 
 ---
 
@@ -416,7 +473,7 @@ python3 -m pytest trader/tests/test_v7_structure.py -v  # V7 單一模組
 | 指標 | pandas-ta（EMA / ATR / ADX / RSI） |
 | 數據 | pandas + numpy |
 | 通知 | Telegram Bot API |
-| 測試 | pytest（362 tests） |
+| 測試 | pytest（366 tests） |
 | 持久化 | JSON (atomic write) + SQLite (performance + scanner) |
 
 ---
