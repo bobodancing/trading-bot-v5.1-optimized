@@ -68,7 +68,11 @@ trading_bot/
 │   │   ├── base.py              # Action enum + DecisionDict + TradingStrategy ABC + StrategyFactory
 │   │   ├── v7_structure.py      # V7 結構加倉（Swing-based 三段加倉 + 反向 2B + 超時）
 │   │   ├── v53_sop.py           # V5.3 SOP 出場（1.0R/1.5R/2.0R 減倉）
-│   │   └── v6_pyramid.py        # [deprecated] V6 滾倉（既有倉位保留）
+│   │   ├── v6_pyramid.py        # [deprecated] V6 滾倉（既有倉位保留）
+│   │   └── v8_grid/             # V8 ATR Grid 策略插件
+│   │       ├── __init__.py      # 統一 export（V8AtrGrid, GridState, GridAction, PoolManager）
+│   │       ├── grid.py          # V8AtrGrid — 虛擬網格引擎（SMA±k*ATR，金字塔權重）
+│   │       └── pool_manager.py  # PoolManager — Grid/Trend 資金池隔離
 │   │
 │   ├── infrastructure/          # 基礎設施
 │   │   ├── api_client.py        # BinanceFuturesClient（HMAC + rate limit）
@@ -79,11 +83,10 @@ trading_bot/
 │   ├── indicators/
 │   │   └── technical.py         # TechnicalAnalysis / DynamicThresholdManager / MTF / MarketFilter
 │   │
-│   ├── regime.py                # RegimeEngine — TRENDING/RANGING/SQUEEZE 三態偵測（ADX+BBW+ATR）
-│   ├── grid.py                  # V8AtrGrid — 虛擬網格引擎（SMA±k*ATR，金字塔權重）
+│   ├── regime.py                # RegimeEngine — TRENDING/RANGING/SQUEEZE 三態偵測（系統級路由）
 │   │
 │   ├── risk/
-│   │   └── manager.py           # PrecisionHandler / RiskManager / SignalTierSystem / PoolManager
+│   │   └── manager.py           # PrecisionHandler / RiskManager / SignalTierSystem
 │   │
 │   ├── execution/
 │   │   └── order_engine.py      # OrderExecutionEngine（下單 / 止損 / 平倉）
@@ -189,11 +192,11 @@ Bot 啟動
 |----|------|------|
 | **主引擎** | `bot.py` | 交易主循環、信號掃描、倉位監控、Regime 路由 |
 | **Regime 引擎** | `regime.py` | TRENDING/RANGING/SQUEEZE 三態偵測（ADX+BBW+ATR，3-candle hysteresis）|
-| **網格引擎** | `grid.py` | V8 ATR Grid 虛擬網格（SMA±k*ATR，金字塔，converge+72h）|
+| **網格引擎** | `strategies/v8_grid/` | V8 ATR Grid 虛擬網格 + PoolManager（SMA±k*ATR，金字塔，converge+72h）|
 | **倉位管理** | `positions.py` | 單 symbol 生命週期、Stage 管理、序列化 |
 | **策略插件** | `strategies/` | 出場邏輯（Registry 模式，可拔插） |
 | **信號偵測** | `signals.py` + `structure.py` | 2B Pivot 偵測、Swing Point、Neckline |
-| **風控** | `risk/manager.py` | 精度處理、倉位計算、Tier 分級、PoolManager |
+| **風控** | `risk/manager.py` | 精度處理、倉位計算、Tier 分級 |
 | **執行** | `execution/order_engine.py` | 下單、止損、平倉 |
 | **基礎設施** | `infrastructure/` | API client、Telegram、數據、績效 DB |
 | **指標** | `indicators/technical.py` | TA / DTM / MTF / MarketFilter |
@@ -473,7 +476,7 @@ python3 -m pytest trader/tests/test_regime.py trader/tests/test_grid.py -v  # V8
 | 指標 | pandas-ta（EMA / ATR / ADX / RSI） |
 | 數據 | pandas + numpy |
 | 通知 | Telegram Bot API |
-| 測試 | pytest（366 tests） |
+| 測試 | pytest（405 tests） |
 | 持久化 | JSON (atomic write) + SQLite (performance + scanner) |
 
 ---
