@@ -164,6 +164,9 @@ class StrategyFactory:
             "v7": "v7_structure",
             "V7": "v7_structure",
             "V7_STRUCTURE": "v7_structure",
+            "v54": "v54_noscale",
+            "V54": "v54_noscale",
+            "V54_NOSCALE": "v54_noscale",
         }
         resolved = _legacy.get(name, name)
         if resolved not in cls._registry:
@@ -171,7 +174,9 @@ class StrategyFactory:
             from trader.strategies.v6_pyramid import V6PyramidStrategy
             from trader.strategies.v53_sop import V53SopStrategy
             from trader.strategies.v7_structure import V7StructureStrategy
+            from trader.strategies.v54_noscale import V54NoScaleStrategy
             cls.register("v6_pyramid", V6PyramidStrategy)
             cls.register("v53_sop", V53SopStrategy)
             cls.register("v7_structure", V7StructureStrategy)
+            cls.register("v54_noscale", V54NoScaleStrategy)
         return cls.create(_legacy.get(name, name))

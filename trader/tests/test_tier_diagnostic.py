@@ -38,14 +38,14 @@ class TestSignalTierScoreReturn:
         assert score == 5  # 2+2+1+0
 
     def test_tier_c_score(self):
-        """Tier C: no MTF + no strong + moderate vol = score 1"""
+        """Tier C: no MTF → MTF gate 觸發，score=0"""
         details = {'candle_confirmed': False}
         tier, mult, score = SignalTierSystem.calculate_signal_tier(
             details, mtf_aligned=False, market_strong=False, volume_grade='moderate'
         )
         assert tier == 'C'
         assert mult == Config.TIER_C_POSITION_MULT
-        assert score == 1  # 0+0+1+0
+        assert score == 0  # MTF gate: 所有分數歸零
 
     def test_disabled_returns_minus_one(self):
         """ENABLE_TIERED_ENTRY=False => score=-1"""
@@ -74,6 +74,59 @@ class TestSignalTierScoreReturn:
             details, mtf_aligned=True, market_strong=True, volume_grade='strong'
         )
         assert score_exp == score_str == 6
+
+
+class TestMTFGate:
+    """MTF Gate: mtf_aligned=False → 其他分數全歸零 → Tier C"""
+
+    def test_mtf_false_returns_score_0(self):
+        """mtf=False → score=0 regardless of other factors"""
+        details = {'candle_confirmed': True}
+        tier, mult, score = SignalTierSystem.calculate_signal_tier(
+            details, mtf_aligned=False, market_strong=True, volume_grade='explosive'
+        )
+        assert tier == 'C'
+        assert mult == Config.TIER_C_POSITION_MULT
+        assert score == 0
+
+    def test_mtf_true_scoring_unchanged(self):
+        """mtf=True → normal scoring (mtf gets +2)"""
+        details = {'candle_confirmed': True}
+        tier, mult, score = SignalTierSystem.calculate_signal_tier(
+            details, mtf_aligned=True, market_strong=True, volume_grade='strong'
+        )
+        assert tier == 'A'
+        assert score == 7  # 2+2+2+1
+
+    def test_mtf_false_ignores_market_strong(self):
+        details = {'candle_confirmed': False}
+        tier, _, score = SignalTierSystem.calculate_signal_tier(
+            details, mtf_aligned=False, market_strong=True, volume_grade='weak'
+        )
+        assert score == 0
+
+    def test_mtf_false_ignores_volume(self):
+        details = {'candle_confirmed': False}
+        tier, _, score = SignalTierSystem.calculate_signal_tier(
+            details, mtf_aligned=False, market_strong=False, volume_grade='explosive'
+        )
+        assert score == 0
+
+    def test_mtf_false_ignores_candle_confirmed(self):
+        details = {'candle_confirmed': True}
+        tier, _, score = SignalTierSystem.calculate_signal_tier(
+            details, mtf_aligned=False, market_strong=False, volume_grade='weak'
+        )
+        assert score == 0
+
+    def test_mtf_true_minimum_score_is_2(self):
+        """mtf=True but nothing else → score=2 (just MTF bonus)"""
+        details = {'candle_confirmed': False}
+        tier, _, score = SignalTierSystem.calculate_signal_tier(
+            details, mtf_aligned=True, market_strong=False, volume_grade='weak'
+        )
+        assert score == 2
+        assert tier == 'C'
 
 
 class TestTierDiagnosticPersistence:

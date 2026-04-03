@@ -879,12 +879,8 @@ class TradingBotV6:
             entry_price = signal_details['entry_price']
             atr = signal_details.get('atr', 0)
 
-            # 判斷是否用 V6.0 滾倉
-            use_v6 = (
-                Config.PYRAMID_ENABLED
-                and signal_type == '2B'
-                and Config.STRATEGY_USE_V6.get('2B_BREAKOUT', True)
-            )
+            # V6/V7 pyramiding deprecated — 所有新進場走 risk-based sizing
+            use_v6 = False
 
             if use_v6:
                 # V6.0: 止損用 signal 的 stop_loss（swing point + buffer）
@@ -903,14 +899,18 @@ class TradingBotV6:
                 initial_r = position_size * abs(entry_price - stop_loss)
 
             else:
-                # V5.3: 原有 risk-based sizing
+                # V5.3 / V54: risk-based sizing
+                # 2B 信號已包含 stop_loss；EMA/VOL 信號用 extreme + ATR 計算
                 if side == 'LONG':
                     extreme = signal_details.get('lowest_point', signal_details.get('stop_level'))
                 else:
                     extreme = signal_details.get('highest_point', signal_details.get('stop_level'))
 
-                stop_loss = self.risk_manager.calculate_stop_loss(extreme, atr, side, df_signal)
-                neckline = None
+                if extreme is not None:
+                    stop_loss = self.risk_manager.calculate_stop_loss(extreme, atr, side, df_signal)
+                else:
+                    stop_loss = signal_details.get('stop_loss', signal_details.get('stop_level', entry_price))
+                neckline = signal_details.get('neckline')
 
                 position_size = self.risk_manager.calculate_position_size(
                     symbol, balance, entry_price, stop_loss, tier_multiplier
@@ -994,7 +994,7 @@ class TradingBotV6:
             )
 
             # 建立 PositionManager（strategy_name 由 SIGNAL_STRATEGY_MAP 決定）
-            strategy_name = Config.SIGNAL_STRATEGY_MAP.get(signal_type, "v6_pyramid")
+            strategy_name = Config.SIGNAL_STRATEGY_MAP.get(signal_type, "v54_noscale")
             pm = PositionManager(
                 symbol=symbol,
                 side=side,
@@ -1145,7 +1145,9 @@ class TradingBotV6:
                 else:
                     profit_pct = (pm.avg_entry - current_price) / pm.avg_entry * 100
 
-                if pm.strategy_name == "v7_structure":
+                if pm.strategy_name == "v54_noscale":
+                    mode = "V54"
+                elif pm.strategy_name == "v7_structure":
                     mode = f"V7/S{pm.stage}"
                 elif pm.strategy_name == "v6_pyramid":
                     mode = f"V6/S{pm.stage}"

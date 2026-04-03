@@ -419,10 +419,12 @@ class SignalTierSystem:
         if not Config.ENABLE_TIERED_ENTRY:
             return 'B', Config.TIER_B_POSITION_MULT, -1  # -1 表示未啟用
 
-        score = 0
+        # MTF Gate: 趨勢未確立 → 其他分數歸零 → Tier C
+        if not mtf_aligned:
+            return 'C', Config.TIER_C_POSITION_MULT, 0
 
-        if mtf_aligned:
-            score += 2
+        score = 2  # MTF aligned bonus
+
         if market_strong:
             score += 2
 

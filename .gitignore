@@ -42,3 +42,4 @@ vpn_watchdog.py
 
 # Git worktrees
 .worktrees/
+v8log/

@@ -218,7 +218,7 @@ class Config:
 
     # ==================== Grid & Regime System ====================
     # Regime Engine
-    ENABLE_GRID_TRADING = False         # 主開關（預設關閉，testnet 驗證後開啟）
+    ENABLE_GRID_TRADING = True         # 主開關（預設關閉，testnet 驗證後開啟）
     REGIME_TIMEFRAME = '4h'             # Regime 偵測用的 K 線週期
     REGIME_ADX_TRENDING = 25            # ADX >= 此值 → TRENDING
     REGIME_ADX_RANGING = 20             # ADX < 此值 → RANGING candidate
@@ -277,11 +277,11 @@ class Config:
     }
 
     # Signal → Strategy 映射（新增策略只需在此加一行 + register class）
+    # V6/V7 pyramiding deprecated — 所有新進場走 V54 純移損
     SIGNAL_STRATEGY_MAP: dict = {
-        "2B": "v7_structure",         # was "v6_pyramid" — V6 deprecated
-        "EMA_PULLBACK": "v53_sop",
-        "VOLUME_BREAKOUT": "v53_sop",
-        "2B_V7": "v7_structure",
+        "2B": "v54_noscale",
+        "EMA_PULLBACK": "v54_noscale",
+        "VOLUME_BREAKOUT": "v54_noscale",
     }
 
     # Debug & 日誌

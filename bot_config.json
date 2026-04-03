@@ -70,9 +70,14 @@
     "early_stop_r_threshold": 0.75,
     "profit_pullback_threshold": 0.55,
     "early_exit_cooldown_hours": 10,
+    "signal_strategy_map": {
+        "2B": "v54_noscale",
+        "EMA_PULLBACK": "v54_noscale",
+        "VOLUME_BREAKOUT": "v54_noscale"
+    },
     "strategy_use_v6": {
-        "2B_BREAKOUT": true,
-        "EMA_PULLBACK": true,
+        "2B_BREAKOUT": false,
+        "EMA_PULLBACK": false,
         "VOLUME_BREAKOUT": false
     },
     "v6_debug_mode": false,
