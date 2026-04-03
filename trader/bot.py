@@ -690,8 +690,13 @@ class TradingBotV6:
                         'positionSide': action.side,
                     }
                 )
-                if result:
-                    TelegramNotifier.notify_grid_action('OPEN', action.side, action.level, current_price, action.size)
+                if result and 'error' not in result:
+                    fill_price = self._extract_fill_price(result, current_price)
+                    action.price = fill_price
+                    self.grid_engine.confirm_action(action)
+                    TelegramNotifier.notify_grid_action('OPEN', action.side, action.level, fill_price, action.size)
+                else:
+                    logger.warning(f"Grid OPEN order rejected: {result}")
             elif action.type == 'CLOSE':
                 side = 'SELL' if action.side == 'LONG' else 'BUY'
                 result = self.futures_client.signed_request_json(
@@ -704,15 +709,20 @@ class TradingBotV6:
                         'positionSide': action.side,
                     }
                 )
-                if result:
-                    entry_price = self._find_grid_entry_price(action)
+                if result and 'error' not in result:
+                    fill_price = self._extract_fill_price(result, current_price)
+                    entry_price = action.entry_price if action.entry_price is not None else current_price
+                    action.price = fill_price
+                    self.grid_engine.confirm_action(action)
                     if action.side == 'LONG':
-                        pnl = (current_price - entry_price) * action.size
+                        pnl = (fill_price - entry_price) * action.size
                     else:
-                        pnl = (entry_price - current_price) * action.size
+                        pnl = (entry_price - fill_price) * action.size
                     self.pool_manager.grid_realized_pnl += pnl
-                    TelegramNotifier.notify_grid_close(action.level, action.side, current_price, pnl)
-                    self._record_grid_trade(action, entry_price, current_price, pnl)
+                    TelegramNotifier.notify_grid_close(action.level, action.side, fill_price, pnl)
+                    self._record_grid_trade(action, entry_price, fill_price, pnl)
+                else:
+                    logger.warning(f"Grid CLOSE order rejected: {result}")
         except Exception as e:
             logger.error(f"Grid action failed: {action} — {e}")
 
@@ -755,14 +765,6 @@ class TradingBotV6:
             "grid_level": action.level,
             "grid_round": self.pool_manager._round_count,
         })
-
-    def _find_grid_entry_price(self, action) -> float:
-        """從 grid_engine.state 找到對應格位的進場價"""
-        if self.grid_engine.state:
-            for pos in self.grid_engine.state.active_positions:
-                if pos['level'] == action.level and pos['side'] == action.side:
-                    return pos['entry']
-        return action.price
 
     def _check_btc_trend(self) -> Optional[str]:
         """Fetch BTC 1D EMA20/50 trend. Returns 'LONG', 'SHORT', 'RANGING', or None on failure."""
