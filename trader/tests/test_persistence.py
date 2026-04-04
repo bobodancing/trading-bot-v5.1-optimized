@@ -17,16 +17,11 @@ TEST_PATH = 'C:/Users/user/test_v6_persist.json'
 
 
 @pytest.fixture(autouse=True)
-def cleanup():
-    """每個 test 前後清理"""
+def cleanup(tmp_path, monkeypatch):
+    """Use a writable temp path so persistence tests stay sandbox-safe."""
+    test_path = tmp_path / "test_v6_persist.json"
+    monkeypatch.setattr(sys.modules[__name__], "TEST_PATH", str(test_path))
     yield
-    if os.path.exists(TEST_PATH):
-        os.remove(TEST_PATH)
-    # cleanup backup
-    bak = TEST_PATH + '.bak'
-    if os.path.exists(bak):
-        os.remove(bak)
-
 
 class TestPersistence:
     """PositionPersistence 基本功能"""
