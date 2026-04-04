@@ -1,4 +1,4 @@
-# 最後更新：2026-03-28
+# 最後更新：2026-04-04
 import os
 import ast
 import sys
@@ -32,6 +32,7 @@ KEY_NON_PYTHON_FILES = [
     ("performance.db",            "交易績效 SQLite（MFE/MAE/capture_ratio/market_regime）"),
     ("hot_symbols.json",          "Scanner 輸出的熱門標的清單"),
     ("scanner/scanner_config.json", "Scanner 專屬設定"),
+    ("grid_positions.json",       "Grid runtime state + pool snapshot（schema v2，atomic write）"),
     ("requirements.txt",          "Python 依賴清單"),
     ("scanner_results.db",        "Scanner SQLite 輸出"),
 ]
@@ -44,18 +45,19 @@ ARCHITECTURE_OVERVIEW = """\
 
 ```
 scanner/
-└── market_scanner.py    ← 四層 Scanner（流動性→動能→形態→相關性）[scanner.service]
+└── market_scanner.py    ← 四層 Scanner（流動性→動能→形態→板塊集中度）[scanner.service]
 
 trader/                  ← [trader.service]
-├── bot.py               ← TradingBotV6 主引擎（monitor loop + SIGTERM handler + TradeFilter）
+├── bot.py               ← TradingBotV6 主引擎（scan→_monitor_grid_state→hedge-aware sync→monitor）
 ├── positions.py         ← PositionManager（strategy_name 插件 + Stage 管理 + 出場委派）
-├── signals.py           ← detect_2b_with_pivots（入場信號）
+├── signals.py           ← detect_2b_with_pivots / ema_pullback / volume_breakout（入場信號）
 ├── structure.py         ← StructureAnalysis（swing point / neckline / BOS 追蹤）
-├── config.py            ← ConfigV6（交易參數 + SIGNAL_STRATEGY_MAP；secrets 另存 secrets.json）
-├── persistence.py       ← PositionPersistence（atomic write）
+├── config.py            ← Config（交易參數 + SIGNAL_STRATEGY_MAP；secrets 另存 secrets.json）
+├── persistence.py       ← PositionPersistence（atomic write）+ grid state persistence（schema v2）
+├── regime.py            ← RegimeEngine（TRENDING/RANGING/SQUEEZE，ADX+BBW+ATR，3-candle hysteresis）
 ├── infrastructure/
-│   ├── api_client.py    ← BinanceFuturesClient（HMAC 簽章 + recvWindow + -1021 偵測）
-│   ├── data_provider.py ← MarketDataProvider（retry + sandbox fallback）
+│   ├── api_client.py    ← BinanceFuturesClient（HMAC 簽章 + recvWindow + hedge mode）
+│   ├── data_provider.py ← MarketDataProvider（retry + sandbox fallback + DatetimeIndex）
 │   ├── notifier.py      ← TelegramNotifier
 │   └── performance_db.py← PerformanceDB（SQLite performance.db，平倉自動寫入）
 ├── indicators/
@@ -67,8 +69,13 @@ trader/                  ← [trader.service]
 │   └── order_engine.py  ← OrderExecutionEngine（下單封裝）
 └── strategies/          ← 策略插件層（Registry Pattern，新策略 register 即可）
     ├── base.py          ← Action enum + DecisionDict + TradingStrategy ABC + StrategyFactory
-    ├── v6_pyramid.py    ← V6PyramidStrategy（結構追蹤 + profit_pullback + stage trigger）
-    └── v53_sop.py       ← V53SopStrategy（1.0R/1.5R/2.0R SOP + state isolation）
+    ├── v54_noscale.py   ← V54NoScaleStrategy（主力；1.0R/1.5R/2.0R 純移損 + ATR trailing）
+    ├── v53_sop.py       ← V53SopStrategy（1.0R/1.5R/2.0R 分批減倉；新進場停用）
+    ├── v7_structure.py  ← V7StructureStrategy（三段結構加倉 + 反向 2B + 超時）
+    ├── v6_pyramid.py    ← [deprecated] V6PyramidStrategy（既有倉位保留）
+    └── v8_grid/         ← V8 ATR Grid 策略插件（BTC RANGING 網格）
+        ├── grid.py      ← V8AtrGrid（SMA±k*ATR 虛擬網格，4H canonical，regime exit 全平）
+        └── pool_manager.py ← PoolManager（Grid/Trend 資金池隔離 + pool snapshot 持久化）
 ```
 """
 
