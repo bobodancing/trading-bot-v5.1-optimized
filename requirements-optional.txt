@@ -1,0 +1,6 @@
+# Optional extras not required for bot runtime or pytest.
+# pip install -r requirements-optional.txt
+#
+# GUI dependencies
+customtkinter>=5.2.0
+pillow>=10.0.0
