@@ -54,7 +54,7 @@ def _apply_common_pre(pm: 'PositionManager', current_price: float, df_1h) -> Opt
         None → 無早期退出，繼續策略邏輯
         dict → 需立即退出，直接回傳此 DecisionDict
     """
-    from trader.config import ConfigV6 as Cfg
+    from trader.config import Config as Cfg
 
     # 更新極值
     pm.highest_price = max(pm.highest_price, current_price)

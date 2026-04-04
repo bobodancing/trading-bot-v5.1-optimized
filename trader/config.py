@@ -407,4 +407,3 @@ class Config:
 
 
 # Alias for convenience
-ConfigV6 = Config  # backward compat alias

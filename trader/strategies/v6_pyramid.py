@@ -52,7 +52,7 @@ class V6PyramidStrategy(TradingStrategy):
         7. Stage Trigger 檢查
         8. HOLD（持倉中）
         """
-        from trader.config import ConfigV6 as Cfg
+        from trader.config import Config as Cfg
         from trader.structure import StructureAnalysis
 
         result: DecisionDict = {

@@ -204,7 +204,7 @@ def integration_bot(tmp_path):
 
     回傳 (bot, engine, fault_injector) tuple。
     """
-    from trader.config import ConfigV6 as Config
+    from trader.config import Config
 
     engine = StatefulMockEngine(initial_balance=10000.0)
     fi = FaultInjector()

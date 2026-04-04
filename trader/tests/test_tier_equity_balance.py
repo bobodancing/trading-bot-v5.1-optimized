@@ -35,7 +35,7 @@ class TestSizingDesign:
 
     def test_v6_stage1_is_066x_v53_max(self):
         """V6 Stage 1 Tier A = V5.3 max × 0.66"""
-        from trader.config import ConfigV6 as Cfg
+        from trader.config import Config as Cfg
         v6_stage1_pct = Cfg.EQUITY_CAP_PERCENT * Cfg.STAGE1_RATIO * Cfg.TIER_A_POSITION_MULT
         v53_max_pct = Cfg.V53_EQUITY_CAP_PERCENT
         ratio = v6_stage1_pct / v53_max_pct
@@ -44,7 +44,7 @@ class TestSizingDesign:
 
     def test_v6_full_is_2x_v53_max(self):
         """V6 全三段 Tier A = V5.3 max × 2.0"""
-        from trader.config import ConfigV6 as Cfg
+        from trader.config import Config as Cfg
         v6_full_pct = Cfg.EQUITY_CAP_PERCENT * Cfg.TIER_A_POSITION_MULT
         v53_max_pct = Cfg.V53_EQUITY_CAP_PERCENT
         ratio = v6_full_pct / v53_max_pct
@@ -52,12 +52,12 @@ class TestSizingDesign:
             f"V6 full Tier A should be 2.0x V5.3 max, got {ratio:.2f}x"
 
     def test_stage_ratios_sum_to_one(self):
-        from trader.config import ConfigV6 as Cfg
+        from trader.config import Config as Cfg
         total = Cfg.STAGE1_RATIO + Cfg.STAGE2_RATIO + Cfg.STAGE3_RATIO
         assert abs(total - 1.0) < 0.001
 
     def test_v53_cap_lt_v6_cap(self):
-        from trader.config import ConfigV6 as Cfg
+        from trader.config import Config as Cfg
         assert Cfg.V53_EQUITY_CAP_PERCENT < Cfg.EQUITY_CAP_PERCENT
 
 
@@ -81,7 +81,7 @@ class TestStage2TierMult:
 
     def test_tier_a_mult_ratio(self):
         """Tier A (1.0) / Tier B (0.7) = 1/0.7 ≈ 1.43"""
-        from trader.config import ConfigV6 as Cfg
+        from trader.config import Config as Cfg
         pm_a = make_pm('A')
         pm_b = make_pm('B')
         size_a = pm_a.calculate_stage2_size(entry_price=105.0)
@@ -119,7 +119,7 @@ class TestStage3TierMult:
         assert size_b > size_c
 
     def test_tier_a_mult_ratio(self):
-        from trader.config import ConfigV6 as Cfg
+        from trader.config import Config as Cfg
         pm_a = make_pm('A')
         pm_b = make_pm('B')
         size_a = pm_a.calculate_stage3_size(entry_price=110.0, swing_stop=102.0)
@@ -136,7 +136,7 @@ class TestV53EquityCap:
     def _make_mock_bot(self):
         """建立最小 bot mock，執行 V5.3 _execute_trade 分支"""
         from trader.bot import TradingBotV6
-        from trader.config import ConfigV6 as Cfg
+        from trader.config import Config as Cfg
 
         with patch.object(Cfg, 'PYRAMID_ENABLED', True), \
              patch('trader.bot.BinanceFuturesClient'):
@@ -148,7 +148,7 @@ class TestV53EquityCap:
 
     def test_v53_notional_capped_when_over_equity_cap(self):
         """V5.3 notional > v53_equity_cap → 截頂"""
-        from trader.config import ConfigV6 as Cfg
+        from trader.config import Config as Cfg
         balance = 1000.0
         entry_price = 100.0
         equity_cap = balance * Cfg.V53_EQUITY_CAP_PERCENT  # 100 USDT（V53 獨立 cap = 10%）
@@ -165,7 +165,7 @@ class TestV53EquityCap:
 
     def test_v53_notional_unchanged_when_under_cap(self):
         """V5.3 notional < v53_equity_cap → 不截頂"""
-        from trader.config import ConfigV6 as Cfg
+        from trader.config import Config as Cfg
         balance = 1000.0
         entry_price = 100.0
         equity_cap = balance * Cfg.V53_EQUITY_CAP_PERCENT  # 100 USDT（V53 獨立 cap = 10%）

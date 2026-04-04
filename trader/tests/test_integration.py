@@ -19,7 +19,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from trader.positions import PositionManager
-from trader.config import ConfigV6 as Config
+from trader.config import Config
 from trader.tests.conftest import make_pm
 
 

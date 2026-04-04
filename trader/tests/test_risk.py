@@ -33,7 +33,7 @@ class TestEquityCap:
             equity_base=10000.0, initial_r=170.0,
         )
 
-        from trader.config import ConfigV6 as Cfg
+        from trader.config import Config as Cfg
         s2_size = pm.calculate_stage2_size(entry_price=96600.0)
         # Tier B (default) = 0.7; new cap = EQUITY_CAP_PERCENT * STAGE2_RATIO * tier_mult
         max_expected = 10000.0 * Cfg.EQUITY_CAP_PERCENT * Cfg.STAGE2_RATIO * Cfg.TIER_B_POSITION_MULT / 96600.0
@@ -50,7 +50,7 @@ class TestEquityCap:
         )
         pm.add_stage2(price=96600.0, size=0.003)
 
-        from trader.config import ConfigV6 as Cfg
+        from trader.config import Config as Cfg
         s3_size = pm.calculate_stage3_size(entry_price=97200.0, swing_stop=96000.0)
         # Tier B (default) = 0.7; new cap = EQUITY_CAP_PERCENT * STAGE3_RATIO * tier_mult
         max_expected = 10000.0 * Cfg.EQUITY_CAP_PERCENT * Cfg.STAGE3_RATIO * Cfg.TIER_B_POSITION_MULT / 97200.0

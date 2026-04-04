@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 
 from trader.strategies.v6_pyramid import V6PyramidStrategy
-from trader.config import ConfigV6 as Cfg
+from trader.config import Config as Cfg
 
 
 def make_pm(entry_time_offset_hours: float, neckline: float = 105.0,

@@ -45,7 +45,7 @@ from trader.strategies.v8_grid import V8AtrGrid, PoolManager
 from trader.indicators.technical import _bbw, _adx
 # 訂單執行層
 from trader.execution.order_engine import OrderExecutionEngine
-from trader.config import ConfigV6 as Config
+from trader.config import Config
 from trader.positions import PositionManager
 from trader.persistence import PositionPersistence
 from trader.signals import detect_2b_with_pivots, detect_ema_pullback, detect_volume_breakout

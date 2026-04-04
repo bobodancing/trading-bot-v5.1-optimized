@@ -279,7 +279,7 @@ class PositionManager:
         Returns:
             bool: 是否觸發
         """
-        from trader.config import ConfigV6 as Cfg
+        from trader.config import Config as Cfg
 
         _tag = "V7" if self.strategy_name == "v7_structure" else "V6"
         prefix = f"[{_tag}] {self.symbol} Stage2Check"
@@ -372,7 +372,7 @@ class PositionManager:
         if df_1h is None or len(df_1h) < 3:
             return False
 
-        from trader.config import ConfigV6 as Cfg
+        from trader.config import Config as Cfg
 
         current = df_1h.iloc[-1]
         prev = df_1h.iloc[-2]
@@ -440,7 +440,7 @@ class PositionManager:
         Returns:
             float: 加倉數量（0 = 不加倉）
         """
-        from trader.config import ConfigV6 as Cfg
+        from trader.config import Config as Cfg
 
         if self.initial_r <= 0:
             logger.warning(f"[{self.symbol}] initial_r={self.initial_r}, skipping stage2 sizing")
@@ -495,7 +495,7 @@ class PositionManager:
         Returns:
             float: 加倉數量（0 = 不加倉）
         """
-        from trader.config import ConfigV6 as Cfg
+        from trader.config import Config as Cfg
 
         if self.initial_r <= 0:
             logger.warning(f"[{self.symbol}] initial_r={self.initial_r}, skipping stage3 sizing")

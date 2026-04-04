@@ -7,7 +7,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from trader.config import ConfigV6 as Config
+from trader.config import Config
 
 
 def _make_btc_df(ema20_above_ema50: bool, rows: int = 60) -> pd.DataFrame:

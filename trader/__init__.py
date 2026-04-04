@@ -6,7 +6,7 @@ Trading Bot — 策略拔插平台
 
 __version__ = "7.0.0"
 
-from trader.config import Config, ConfigV6
+from trader.config import Config
 from trader.infrastructure.api_client import BinanceFuturesClient
 from trader.infrastructure.notifier import TelegramNotifier
 from trader.indicators.technical import (

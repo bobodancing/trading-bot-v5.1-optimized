@@ -176,7 +176,7 @@ class TestV54TimeExit:
 
     def test_timeout_before_15r(self):
         """未達 1.5R + 超時 → CLOSE"""
-        from trader.config import ConfigV6 as Cfg
+        from trader.config import Config as Cfg
         pm = _make_pm(side='LONG', entry=100, sl=90, hours_ago=Cfg.STAGE1_MAX_HOURS + 1)
         df = _make_df(close=105.0, atr=2.0)
         d = pm.monitor(105.0, df)
@@ -184,7 +184,7 @@ class TestV54TimeExit:
 
     def test_no_timeout_after_15r(self):
         """已達 1.5R lock → 不觸發 timeout"""
-        from trader.config import ConfigV6 as Cfg
+        from trader.config import Config as Cfg
         pm = _make_pm(side='LONG', entry=100, sl=90, hours_ago=1)
         df = _make_df(close=115.0, atr=20.0)  # wide ATR so trailing doesn't tighten too much
         pm.monitor(115.0, df)  # triggers 1.5R lock

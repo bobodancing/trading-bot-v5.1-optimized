@@ -273,7 +273,7 @@ class TestV7SLRatchet:
         from trader.strategies.v7_structure import V7StructureStrategy
         strategy = V7StructureStrategy()
         pm = make_pm(side='LONG', entry_price=100.0, stop_loss=95.0, stage=2, atr=2.0)
-        from trader.config import ConfigV6 as Cfg
+        from trader.config import Config as Cfg
         # swing low at 92, new_sl = 92-1.6 = 90.4 < 95 → don't move
         result = strategy._structure_trailing_sl(pm, _make_swing_df_long_hl(), Cfg)
         assert result is None
@@ -283,7 +283,7 @@ class TestV7SLRatchet:
         from trader.strategies.v7_structure import V7StructureStrategy
         strategy = V7StructureStrategy()
         pm = make_pm(side='SHORT', entry_price=100.0, stop_loss=105.0, stage=2, atr=2.0)
-        from trader.config import ConfigV6 as Cfg
+        from trader.config import Config as Cfg
         # swing high at 108, new_sl = 108+1.6 = 109.6 > 105 → don't move
         result = strategy._structure_trailing_sl(pm, _make_swing_df_short_lh(), Cfg)
         assert result is None

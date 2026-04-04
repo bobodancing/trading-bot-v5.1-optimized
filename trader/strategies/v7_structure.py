@@ -51,7 +51,7 @@ class V7StructureStrategy(TradingStrategy):
         df_4h=None,
         **kwargs,
     ) -> DecisionDict:
-        from trader.config import ConfigV6 as Cfg
+        from trader.config import Config as Cfg
 
         result: DecisionDict = {
             "action": Action.HOLD,

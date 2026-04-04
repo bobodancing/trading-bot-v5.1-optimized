@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from trader.config import ConfigV6 as Config
+from trader.config import Config
 from trader.strategies.v8_grid import GridAction, V8AtrGrid
 
 

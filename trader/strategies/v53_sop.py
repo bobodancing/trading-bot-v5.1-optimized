@@ -71,7 +71,7 @@ class V53SopStrategy(TradingStrategy):
         7. ATR trailing 移損
         8. HOLD（持倉中）
         """
-        from trader.config import ConfigV6 as Cfg
+        from trader.config import Config as Cfg
         from trader.structure import StructureAnalysis
 
         result: DecisionDict = {

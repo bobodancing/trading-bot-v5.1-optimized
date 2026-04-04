@@ -66,7 +66,7 @@ class V54NoScaleStrategy(TradingStrategy):
         7. ATR trailing
         8. HOLD
         """
-        from trader.config import ConfigV6 as Cfg
+        from trader.config import Config as Cfg
         from trader.structure import StructureAnalysis
 
         result: DecisionDict = {

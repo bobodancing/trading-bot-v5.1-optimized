@@ -5,7 +5,7 @@ import numpy as np
 from unittest.mock import patch, MagicMock
 from datetime import datetime, timezone, timedelta
 
-from trader.config import ConfigV6 as Config
+from trader.config import Config
 
 
 def _make_btc_df(ema20_above_ema50: bool, ranging: bool = False):

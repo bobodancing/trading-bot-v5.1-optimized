@@ -75,7 +75,7 @@ class TestPartialPnlIntegration:
 
     def test_v53_reduce_accumulates_pnl_long(self, mock_bot):
         """LONG 減倉時，partial PnL 正確累積"""
-        from trader.config import ConfigV6 as Config
+        from trader.config import Config
 
         pm = PositionManager(
             'ETH/USDT', 'LONG', 2000.0, 1900.0, 10.0,
@@ -101,7 +101,7 @@ class TestPartialPnlIntegration:
 
     def test_v53_reduce_accumulates_pnl_short(self, mock_bot):
         """SHORT 減倉時，partial PnL 正確累積"""
-        from trader.config import ConfigV6 as Config
+        from trader.config import Config
 
         pm = PositionManager(
             'ETH/USDT', 'SHORT', 2000.0, 2100.0, 10.0,

@@ -7,7 +7,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from trader.config import ConfigV6 as Config
+from trader.config import Config
 from trader.strategies.v8_grid import GridState
 from trader.tests.conftest import make_pm
 
