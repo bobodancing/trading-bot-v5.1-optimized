@@ -1241,59 +1241,38 @@ class TradingBotV6:
             side = signal_details['side']
             entry_price = signal_details['entry_price']
             atr = signal_details.get('atr', 0)
-
-            # V6/V7 pyramiding deprecated — 所有新進場走 risk-based sizing
-            use_v6 = False
-
-            if use_v6:
-                # V6.0: 止損用 signal 的 stop_loss（swing point + buffer）
-                stop_loss = signal_details.get('stop_loss', signal_details.get('stop_level', entry_price))
-                neckline = signal_details.get('neckline')
-
-                # V6.0: Stage 1 size = equity_cap * stage1_ratio
-                stage1_value = balance * Config.EQUITY_CAP_PERCENT * Config.STAGE1_RATIO
-                raw_size = stage1_value / entry_price
-                raw_size *= tier_multiplier
-
-                position_size = self._validate_position_size(symbol, raw_size, entry_price, "V6")
-                if position_size is None:
-                    return
-
-                initial_r = position_size * abs(entry_price - stop_loss)
-
+            # V5.3 / V54: risk-based sizing
+            # 2B 訊號直接用 stop_loss；EMA/VOL 訊號用 extreme + ATR 計算
+            if side == 'LONG':
+                extreme = signal_details.get('lowest_point', signal_details.get('stop_level'))
             else:
-                # V5.3 / V54: risk-based sizing
-                # 2B 信號已包含 stop_loss；EMA/VOL 信號用 extreme + ATR 計算
-                if side == 'LONG':
-                    extreme = signal_details.get('lowest_point', signal_details.get('stop_level'))
-                else:
-                    extreme = signal_details.get('highest_point', signal_details.get('stop_level'))
+                extreme = signal_details.get('highest_point', signal_details.get('stop_level'))
 
-                if extreme is not None:
-                    stop_loss = self.risk_manager.calculate_stop_loss(extreme, atr, side, df_signal)
-                else:
-                    stop_loss = signal_details.get('stop_loss', signal_details.get('stop_level', entry_price))
-                neckline = signal_details.get('neckline')
+            if extreme is not None:
+                stop_loss = self.risk_manager.calculate_stop_loss(extreme, atr, side, df_signal)
+            else:
+                stop_loss = signal_details.get('stop_loss', signal_details.get('stop_level', entry_price))
+            neckline = signal_details.get('neckline')
 
-                position_size = self.risk_manager.calculate_position_size(
-                    symbol, balance, entry_price, stop_loss, tier_multiplier
+            position_size = self.risk_manager.calculate_position_size(
+                symbol, balance, entry_price, stop_loss, tier_multiplier
+            )
+            if position_size <= 0:
+                return
+
+            # V5.3 equity cap：避免孤注一擲，但不再吃掉風控
+            v53_notional = position_size * entry_price
+            v53_cap_notional = balance * Config.V53_EQUITY_CAP_PERCENT
+            if v53_notional > v53_cap_notional:
+                capped_size = self.precision_handler.round_amount(symbol, v53_cap_notional / entry_price)
+                logger.info(
+                    f"{symbol}: V5.3 notional 截頂 "
+                    f"${v53_notional:.2f} -> ${v53_cap_notional:.2f} "
+                    f"(v53_equity_cap={Config.V53_EQUITY_CAP_PERCENT*100:.0f}%)"
                 )
-                if position_size <= 0:
-                    return
+                position_size = capped_size
 
-                # V5.3 equity cap：獨立上限，避免緊止損暴倉
-                v53_notional = position_size * entry_price
-                v53_cap_notional = balance * Config.V53_EQUITY_CAP_PERCENT
-                if v53_notional > v53_cap_notional:
-                    capped_size = self.precision_handler.round_amount(symbol, v53_cap_notional / entry_price)
-                    logger.info(
-                        f"{symbol}: V5.3 notional 截頂 "
-                        f"${v53_notional:.2f} -> ${v53_cap_notional:.2f} "
-                        f"(v53_equity_cap={Config.V53_EQUITY_CAP_PERCENT*100:.0f}%)"
-                    )
-                    position_size = capped_size
-
-                initial_r = balance * Config.RISK_PER_TRADE
+            initial_r = balance * Config.RISK_PER_TRADE
 
             # === Risk Guard: SL Distance Cap ===
             sl_distance_pct = abs(entry_price - stop_loss) / entry_price
@@ -1310,7 +1289,7 @@ class TradingBotV6:
                     f"[模擬] {symbol} {side} | 策略={signal_type} | "
                     f"倉位={position_size:.6f} @ ${entry_price:.2f} | "
                     f"止損=${stop_loss:.2f} | neckline={'$' + f'{neckline:.2f}' if neckline else '無'} | "
-                    f"滾倉={use_v6}"
+                    "滾倉=False"
                 )
                 # Dry run 也生成 trade_id 用於測試
                 dry_trade_id = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S') + '_' + symbol.replace('/', '')
@@ -1323,7 +1302,7 @@ class TradingBotV6:
                     'sl': f'{stop_loss:.2f}',
                     'value': f'{position_size * entry_price:.2f}',
                     'risk': f'{initial_r:.2f}',
-                    'pyramid': use_v6,
+                    'pyramid': False,
                     'vol_ratio': f'{signal_details.get("vol_ratio", 0):.2f}',
                     'regime': signal_details.get('market_regime', 'UNKNOWN'),
                     'btc_trend': signal_details.get('btc_trend', 'UNKNOWN'),
@@ -1351,7 +1330,7 @@ class TradingBotV6:
             logger.info(
                 f"{symbol} {side} 開倉成功: {position_size:.6f} @ ${entry_price:.2f} | "
                 f"止損=${stop_loss:.2f} 策略={signal_type} 等級={signal_details.get('signal_tier','?')} "
-                f"量能={signal_details.get('vol_ratio',0):.2f}x 滾倉={use_v6} | "
+                f"量能={signal_details.get('vol_ratio',0):.2f}x 滾倉=False | "
                 f"市場={signal_details.get('_market_reason','')} 趨勢={signal_details.get('_trend_desc','')} "
                 f"MTF={signal_details.get('_mtf_reason','')}"
             )
@@ -1399,7 +1378,7 @@ class TradingBotV6:
                 'sl': f'{stop_loss:.2f}',
                 'value': f'{position_size * entry_price:.2f}',
                 'risk': f'{initial_r:.2f}',
-                'pyramid': use_v6,
+                'pyramid': False,
                 'vol_ratio': f'{signal_details.get("vol_ratio", 0):.2f}',
                 'regime': signal_details.get('market_regime', 'UNKNOWN'),
                 'btc_trend': signal_details.get('btc_trend', 'UNKNOWN'),
@@ -1419,7 +1398,7 @@ class TradingBotV6:
                 **signal_details,
                 'position_size': position_size,
                 'stop_loss': stop_loss,
-                'is_v6': use_v6,
+                'is_v6': False,
                 'neckline': neckline,
             })
 
