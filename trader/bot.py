@@ -2127,6 +2127,14 @@ class TradingBotV6:
             logger.error("啟動診斷失敗，停止運行")
             return
 
+        try:
+            dual_mode = self.futures_client.get_position_side_dual()
+            self.execution_engine.hedge_mode = dual_mode
+            if dual_mode:
+                logger.info('Account is in Hedge Mode, execution_engine.hedge_mode=True')
+        except Exception as e:
+            logger.warning(f'Could not determine hedge mode state: {e}')
+
         # Ensure hedge mode for grid trading
         if Config.ENABLE_GRID_TRADING:
             is_hedge = self.futures_client.get_position_mode()
@@ -2147,6 +2155,10 @@ class TradingBotV6:
                 logger.warning("無法查詢 position mode — grid trading 已停用")
                 Config.ENABLE_GRID_TRADING = False
             if Config.ENABLE_GRID_TRADING:
+                try:
+                    self.execution_engine.hedge_mode = self.futures_client.get_position_side_dual()
+                except Exception as e:
+                    logger.warning(f"Could not refresh hedge mode state after grid check: {e}")
                 self.grid_engine.load_state()
 
         logger.info("機器人開始運行...\n")

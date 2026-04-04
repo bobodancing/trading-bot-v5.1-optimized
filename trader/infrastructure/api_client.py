@@ -1,12 +1,10 @@
 """
-Binance Futures API 客戶端
-
-統一的 HMAC SHA256 簽章 + HTTP 請求封裝，消除重複的簽章與請求邏輯。
-從 v6/core.py 提取。
+Binance Futures API client helpers.
 """
 
-import time
 import logging
+import time
+
 import requests
 
 from trader.config import Config
@@ -15,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 class BinanceFuturesClient:
-    """統一的 Binance Futures API 客戶端，消除重複的簽章與請求邏輯"""
+    """Thin wrapper around Binance Futures signed REST endpoints."""
 
     def __init__(self, api_key: str, api_secret: str, sandbox: bool = True):
         self.api_key = api_key
@@ -25,33 +23,38 @@ class BinanceFuturesClient:
             else "https://fapi.binance.com"
         )
         self._current_weight = 0
-        self._weight_limit = 2000  # Binance 上限 2400，保留安全邊際
+        self._weight_limit = 2000
 
     @staticmethod
     def is_enabled() -> bool:
-        """判斷是否應使用 Binance Futures 直接 API（取代 ccxt）"""
-        return (Config.SANDBOX_MODE
-                and Config.TRADING_MODE == 'future'
-                and Config.EXCHANGE == 'binance')
+        """Whether the direct Binance Futures client should be used."""
+        return (
+            Config.SANDBOX_MODE
+            and Config.TRADING_MODE == 'future'
+            and Config.EXCHANGE == 'binance'
+        )
 
-    def signed_request(self, method: str, endpoint: str, params: dict = None) -> requests.Response:
-        """
-        HMAC SHA256 簽章 + HTTP 請求，回傳原始 Response。
-        """
-        import hmac as hmac_mod
+    def signed_request(
+        self,
+        method: str,
+        endpoint: str,
+        params: dict = None,
+    ) -> requests.Response:
+        """Send a signed Binance request and return the raw response."""
         import hashlib
+        import hmac as hmac_mod
         from urllib.parse import urlencode
 
         if params is None:
             params = {}
 
         params['timestamp'] = int(time.time() * 1000)
-        params['recvWindow'] = 10000  # 10s 容差（默認 5s 太緊，易觸發 -1021）
+        params['recvWindow'] = 10000
         query_string = urlencode(params)
         signature = hmac_mod.new(
             self.api_secret.strip().encode('utf-8'),
             query_string.encode('utf-8'),
-            hashlib.sha256
+            hashlib.sha256,
         ).hexdigest()
         params['signature'] = signature
 
@@ -59,7 +62,10 @@ class BinanceFuturesClient:
         url = f"{self.base_url}{endpoint}"
 
         if self._current_weight > self._weight_limit:
-            logger.warning(f"API weight {self._current_weight} exceeds limit {self._weight_limit}, sleeping 1s")
+            logger.warning(
+                f"API weight {self._current_weight} exceeds limit "
+                f"{self._weight_limit}, sleeping 1s"
+            )
             time.sleep(1.0)
 
         if method.upper() == 'POST':
@@ -77,46 +83,57 @@ class BinanceFuturesClient:
             except ValueError:
                 pass
 
-        # 偵測 -1021 timestamp 錯誤，方便排查時鐘同步問題
         if response.status_code == 400:
             try:
                 error_body = response.json()
                 if error_body.get('code') == -1021:
-                    logger.warning(f"[TIMESTAMP] 時鐘偏差過大，建議檢查 NTP: {endpoint}")
+                    logger.warning(
+                        f"[TIMESTAMP] Check local time/NTP drift for endpoint: {endpoint}"
+                    )
             except Exception:
                 pass
 
         return response
 
-    def signed_request_json(self, method: str, endpoint: str, params: dict = None) -> dict:
-        """簽章 + 請求 + JSON 解析 + 統一錯誤處理。"""
+    def signed_request_json(
+        self,
+        method: str,
+        endpoint: str,
+        params: dict = None,
+    ) -> dict:
+        """Send a signed request and return JSON or an error dict."""
         try:
             response = self.signed_request(method, endpoint, params)
             if response.status_code == 200:
                 return response.json()
-            else:
-                logger.error(f"API 錯誤: {response.status_code} - {response.text}")
-                return {"error": response.text, "code": response.status_code}
+            logger.error(f"API error: {response.status_code} - {response.text}")
+            return {"error": response.text, "code": response.status_code}
         except Exception as e:
-            logger.error(f"API 請求失敗: {e}")
+            logger.error(f"API request failed: {e}")
             return {"error": str(e)}
 
+    def get_position_side_dual(self) -> bool:
+        """Return account-wide dualSidePosition (hedge mode) state."""
+        resp = self.signed_request_json('GET', '/fapi/v1/positionSide/dual')
+        if resp is not None and 'error' not in resp and 'dualSidePosition' in resp:
+            return bool(resp['dualSidePosition'])
+        raise RuntimeError(f"Failed to get positionSide/dual: {resp}")
+
     def get_position_mode(self):
-        """查詢是否已啟用 hedge mode (dualSidePosition)"""
+        """Backward-compatible helper for hedge mode checks."""
         try:
-            resp = self.signed_request_json('GET', '/fapi/v1/positionSide/dual')
-            if resp and 'dualSidePosition' in resp:
-                return resp['dualSidePosition']
+            return self.get_position_side_dual()
         except Exception as e:
             logger.warning(f"Failed to get position mode: {e}")
         return None
 
     def set_hedge_mode(self, dual: bool = True) -> bool:
-        """設定 hedge mode。注意：有持倉時無法切換。"""
+        """Enable or disable Binance hedge mode."""
         try:
             resp = self.signed_request_json(
-                'POST', '/fapi/v1/positionSide/dual',
-                params={'dualSidePosition': str(dual).lower()}
+                'POST',
+                '/fapi/v1/positionSide/dual',
+                params={'dualSidePosition': str(dual).lower()},
             )
             if resp is not None and 'error' not in resp:
                 logger.info(f"Hedge mode set to {dual}")

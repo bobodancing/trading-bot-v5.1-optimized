@@ -32,6 +32,7 @@ class OrderExecutionEngine:
         exchange,
         futures_client: BinanceFuturesClient,
         precision_handler: PrecisionHandler,
+        hedge_mode: bool = False,
     ):
         """
         Args:
@@ -42,6 +43,7 @@ class OrderExecutionEngine:
         self.exchange = exchange
         self.futures_client = futures_client
         self.precision_handler = precision_handler
+        self.hedge_mode: bool = bool(hedge_mode)
 
     # ==================== 槓桿設置 ====================
 
@@ -65,6 +67,8 @@ class OrderExecutionEngine:
             'type': 'MARKET',
             'quantity': formatted,
         }
+        if self.hedge_mode:
+            params['positionSide'] = 'LONG' if side.upper() == 'BUY' else 'SHORT'
         result = self.futures_client.signed_request_json('POST', '/fapi/v1/order', params)
         if 'error' in result:
             raise Exception(f"Order failed: {result['error']}")
@@ -87,6 +91,9 @@ class OrderExecutionEngine:
             'quantity': formatted,
             'reduceOnly': 'true',
         }
+        if self.hedge_mode:
+            params.pop('reduceOnly', None)
+            params['positionSide'] = 'LONG' if side == 'LONG' else 'SHORT'
         try:
             result = self.futures_client.signed_request_json('POST', '/fapi/v1/order', params)
             if 'error' in result:
@@ -124,6 +131,9 @@ class OrderExecutionEngine:
                     'triggerPrice': f"{stop_price:.2f}",
                     'reduceOnly': 'true',
                 }
+                if self.hedge_mode:
+                    params.pop('reduceOnly', None)
+                    params['positionSide'] = 'LONG' if side == 'LONG' else 'SHORT'
                 response = self.futures_client.signed_request('POST', '/fapi/v1/algoOrder', params)
                 if response.status_code == 200:
                     algo_id = response.json().get('algoId')
@@ -133,9 +143,13 @@ class OrderExecutionEngine:
                     logger.error(f"硬止損設定失敗: {response.status_code} - {response.text}")
             else:
                 stop_side_lower = 'sell' if side == 'LONG' else 'buy'
+                params = {'stopPrice': stop_price, 'reduceOnly': True}
+                if self.hedge_mode:
+                    params.pop('reduceOnly', None)
+                    params['positionSide'] = 'LONG' if side == 'LONG' else 'SHORT'
                 order = self.exchange.create_order(
                     symbol=symbol, type='STOP_MARKET', side=stop_side_lower,
-                    amount=size, params={'stopPrice': stop_price, 'reduceOnly': True}
+                    amount=size, params=params
                 )
                 return order.get('id')
         except Exception as e:
