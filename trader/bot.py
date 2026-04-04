@@ -50,6 +50,7 @@ from trader.positions import PositionManager
 from trader.persistence import PositionPersistence
 from trader.signals import detect_2b_with_pivots, detect_ema_pullback, detect_volume_breakout
 from trader.strategies.base import Action
+from trader.grid_manager import GridManager
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +124,7 @@ class TradingBot:
         self._start_time = datetime.now(timezone.utc)
         self._btc_regime_context: Dict[str, object] = {}
         self._btc_trend_context: Dict[str, object] = {}
+        self.grid_manager = GridManager(self)
 
     def _init_exchange(self):
         """初始化交易所（沿用 V5.3）"""
@@ -625,207 +627,19 @@ class TradingBot:
 
     # ==================== Private Helpers ====================
 
+    # -- Grid management (delegated to GridManager) --
+
     def _scan_grid_signals(self):
-        """網格策略掃描 — 僅 BTC/USDT"""
-        if not Config.ENABLE_GRID_TRADING:
-            return
-
-        # Cooldown check
-        if self.grid_engine.state and self.grid_engine.state.last_cooldown_time > 0:
-            elapsed = time.time() - self.grid_engine.state.last_cooldown_time
-            if elapsed < Config.GRID_COOLDOWN_HOURS * 3600:
-                return
-
-        btc_df_4h = self.data_provider.fetch_ohlcv("BTC/USDT", "4h", limit=60)
-        if btc_df_4h is None or btc_df_4h.empty:
-            return
-
-        # Activate if needed
-        if not self.grid_engine.state:
-            balance = self.risk_manager.get_balance()
-            if not self.pool_manager.activate_grid_pool(balance):
-                return
-            grid_balance = self.pool_manager.get_grid_balance()
-            self.grid_engine.activate(btc_df_4h, grid_balance)
-            if self.grid_engine.state:
-                TelegramNotifier.notify_grid_activated(
-                    self.grid_engine.state.center,
-                    self.grid_engine.state.lower,
-                    self.grid_engine.state.upper,
-                    self.grid_engine.state.grid_levels,
-                )
-
-        # Tick
-        ticker = self.fetch_ticker("BTC/USDT")
-        if not ticker:
-            return
-        current_price = ticker['last']
-        btc_df_1h = self.data_provider.fetch_ohlcv("BTC/USDT", Config.TIMEFRAME_SIGNAL, limit=50)
-        if btc_df_1h is None or btc_df_1h.empty:
-            return
-
-        market_ts = self._get_last_closed_candle_time(btc_df_1h)
-        if market_ts is None:
-            market_ts = self._get_last_closed_candle_time(btc_df_4h)
-
-        actions = self.grid_engine.tick(
-            current_price,
-            btc_df_1h,
-            df_4h=btc_df_4h,
-            market_ts=market_ts,
-        )
-        for action in actions:
-            self._execute_grid_action(action, current_price)
-        self.grid_engine.save_state(self.pool_manager.to_dict())
+        self.grid_manager.scan_grid_signals()
 
     def _monitor_grid_state(self):
-        """Drive grid lifecycle every cycle, even when no trend positions exist."""
-        if not Config.ENABLE_GRID_TRADING:
-            return
-
-        regime = str((self._btc_regime_context or {}).get('regime') or self.regime_engine.current_regime)
-
-        if not self.grid_engine.state:
-            if regime == "RANGING":
-                self._scan_grid_signals()
-            return
-
-        if self.grid_engine.state.converging:
-            if not self.grid_engine.state.active_positions:
-                self._finalize_grid_shutdown_if_flat()
-                return
-
-            ticker = self.fetch_ticker("BTC/USDT")
-            if not ticker:
-                self.grid_engine.save_state(self.pool_manager.to_dict())
-                return
-
-            current_price = ticker['last']
-            for action in self.grid_engine.force_close_all("regime_exit"):
-                self._execute_grid_action(action, current_price)
-
-            if self.grid_engine.state and not self.grid_engine.state.active_positions:
-                self._finalize_grid_shutdown_if_flat()
-            else:
-                self.grid_engine.save_state(self.pool_manager.to_dict())
-            return
-
-        if regime != "RANGING":
-            self.grid_engine.converge(market_ts=self._get_regime_market_ts())
-            TelegramNotifier.notify_grid_stopped("converge", f"→ {regime}")
-
-            ticker = self.fetch_ticker("BTC/USDT")
-            if not ticker:
-                self.grid_engine.save_state(self.pool_manager.to_dict())
-                return
-
-            current_price = ticker['last']
-            for action in self.grid_engine.force_close_all("regime_exit"):
-                self._execute_grid_action(action, current_price)
-
-            if self.grid_engine.state and not self.grid_engine.state.active_positions:
-                self._finalize_grid_shutdown_if_flat()
-            else:
-                self.grid_engine.save_state(self.pool_manager.to_dict())
-            return
-
-        self._scan_grid_signals()
+        self.grid_manager.monitor_grid_state()
 
     def _execute_grid_action(self, action, current_price: float):
-        """執行網格動作（開倉/平倉）"""
-        if Config.V6_DRY_RUN:
-            logger.info(f"[DRY_RUN] Grid {action.type} {action.side} L{action.level} "
-                        f"size={action.size:.4f} @ {current_price:.0f}")
-            return
-
-        try:
-            if action.type == 'OPEN':
-                side = 'BUY' if action.side == 'LONG' else 'SELL'
-                result = self.futures_client.signed_request_json(
-                    'POST', '/fapi/v1/order',
-                    params={
-                        'symbol': 'BTCUSDT',
-                        'side': side,
-                        'type': 'MARKET',
-                        'quantity': f"{action.size:.4f}",
-                        'positionSide': action.side,
-                    }
-                )
-                if result and 'error' not in result:
-                    fill_price = self._extract_fill_price(result, current_price)
-                    action.price = fill_price
-                    self.grid_engine.confirm_action(action)
-                    TelegramNotifier.notify_grid_action('OPEN', action.side, action.level, fill_price, action.size)
-                else:
-                    logger.warning(f"Grid OPEN order rejected: {result}")
-            elif action.type == 'CLOSE':
-                side = 'SELL' if action.side == 'LONG' else 'BUY'
-                result = self.futures_client.signed_request_json(
-                    'POST', '/fapi/v1/order',
-                    params={
-                        'symbol': 'BTCUSDT',
-                        'side': side,
-                        'type': 'MARKET',
-                        'quantity': f"{action.size:.4f}",
-                        'positionSide': action.side,
-                    }
-                )
-                if result and 'error' not in result:
-                    fill_price = self._extract_fill_price(result, current_price)
-                    entry_price = action.entry_price if action.entry_price is not None else current_price
-                    action.price = fill_price
-                    self.grid_engine.confirm_action(action)
-                    if action.side == 'LONG':
-                        pnl = (fill_price - entry_price) * action.size
-                    else:
-                        pnl = (entry_price - fill_price) * action.size
-                    self.pool_manager.grid_realized_pnl += pnl
-                    TelegramNotifier.notify_grid_close(action.level, action.side, fill_price, pnl)
-                    self._record_grid_trade(action, entry_price, fill_price, pnl)
-                else:
-                    logger.warning(f"Grid CLOSE order rejected: {result}")
-        except Exception as e:
-            logger.error(f"Grid action failed: {action} — {e}")
+        self.grid_manager.execute_grid_action(action, current_price)
 
     def _record_grid_trade(self, action, entry_price: float, exit_price: float, pnl: float):
-        """記錄 grid 交易到 performance.db"""
-        now = datetime.now(timezone.utc)
-        self.perf_db.record_trade({
-            "trade_id": f"grid_{action.side}_{action.level}_{int(time.time())}",
-            "symbol": "BTC/USDT",
-            "side": action.side,
-            "is_v6_pyramid": 0,
-            "signal_tier": None,
-            "entry_price": entry_price,
-            "exit_price": exit_price,
-            "total_size": action.size,
-            "initial_r": 0.0,
-            "entry_time": now.isoformat(),
-            "exit_time": now.isoformat(),
-            "holding_hours": 0.0,
-            "pnl_usdt": pnl,
-            "pnl_pct": pnl / self.pool_manager.grid_allocated * 100 if self.pool_manager.grid_allocated > 0 else 0,
-            "realized_r": 0.0,
-            "mfe_pct": 0.0,
-            "mae_pct": 0.0,
-            "capture_ratio": None,
-            "stage_reached": 0,
-            "exit_reason": "grid_close",
-            "market_regime": self.regime_engine.current_regime,
-            "entry_adx": None,
-            "fakeout_depth_atr": None,
-            "reverse_2b_depth_atr": None,
-            "original_size": action.size,
-            "partial_pnl_usdt": None,
-            "btc_trend_aligned": None,
-            "trend_adx": None,
-            "mtf_aligned": None,
-            "volume_grade": None,
-            "tier_score": None,
-            "strategy_name": "v8_atr_grid",
-            "grid_level": action.level,
-            "grid_round": self.pool_manager.round_count,
-        })
+        self.grid_manager.record_grid_trade(action, entry_price, exit_price, pnl)
 
     def _check_btc_trend(self) -> Optional[str]:
         """Fetch BTC 1D EMA20/50 trend. Returns 'LONG', 'SHORT', 'RANGING', or None on failure."""
@@ -930,47 +744,13 @@ class TradingBot:
         return internal_map
 
     def _is_grid_exchange_flat(self) -> bool:
-        if Config.V6_DRY_RUN:
-            return True
-        exchange_positions = self.risk_manager.get_positions()
-        if exchange_positions is None:
-            return False
-        exchange_map = self._build_exchange_position_map(exchange_positions)
-        long_amt = exchange_map.get(('BTCUSDT', 'LONG'), 0.0)
-        short_amt = exchange_map.get(('BTCUSDT', 'SHORT'), 0.0)
-        return long_amt <= 0 and short_amt <= 0
+        return self.grid_manager.is_exchange_flat()
 
     def _finalize_grid_shutdown_if_flat(self):
-        if not self.grid_engine.state:
-            return
-        if not self._is_grid_exchange_flat():
-            logger.info("Grid exit pending: internal state flat but exchange still shows BTC grid exposure")
-            self.grid_engine.save_state(self.pool_manager.to_dict())
-            return
-
-        logger.info("Grid converge complete -> deactivating")
-        self.pool_manager.deactivate_grid_pool()
-        self.grid_engine.deactivate()
-        self.grid_engine.save_state(self.pool_manager.to_dict())
+        self.grid_manager.finalize_grid_shutdown_if_flat()
 
     def _restore_grid_runtime_state(self):
-        payload = self.grid_engine.load_state() or {}
-        if not self.grid_engine.state:
-            return
-
-        pool_state = payload.get('pool_state', {}) if payload else {}
-        if pool_state:
-            self.pool_manager.load_state(pool_state)
-            return
-
-        # Legacy v1 files only persisted grid_state; keep runtime balance semantics aligned.
-        self.pool_manager.load_state(
-            {
-                'grid_allocated': self.grid_engine.state.grid_balance,
-                'grid_realized_pnl': 0.0,
-                'round_count': max(1, self.pool_manager.round_count),
-            }
-        )
+        self.grid_manager.restore_runtime_state()
 
     @staticmethod
     def _format_candle_time(candle_time: Optional[pd.Timestamp]) -> str:
